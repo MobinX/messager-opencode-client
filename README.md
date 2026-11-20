@@ -12,8 +12,10 @@ Messages arriving on the OnlyOrders webhook are parsed:
 - `/model ls`, `/models 2` list and switch models.
 - Anything else is sent as a prompt to the attached session (or asks you to attach one first).
 
-For a prompt, each completed reasoning (thinking) step is forwarded as a `thinking: ...` message,
-followed by the assistant's final answer. Tool-call chatter is still ignored.
+For a prompt, thinking is relayed in a compact pattern: the 1st step is sent in full as
+`thinking: ...`, the next 2 are skipped, the 4th becomes `(Thinking.....)`, then the pattern
+repeats (5th full, 8th compact, ...). The assistant's final answer is always sent. Tool-call
+chatter is ignored. Attachment history separates each of the last 3 turns with `#############`.
 
 ## Setup
 

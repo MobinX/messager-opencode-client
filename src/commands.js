@@ -68,6 +68,20 @@ async function activeModel(client, state) {
   return state.modelList[0] ?? envModel();
 }
 
+/**
+ * Thinking relays: send the 1st full thinking step, skip the next 2, send a compact
+ * "(Thinking.....)" for the 4th, then repeat (5th full, 8th compact, ...).
+ */
+function thinkingRelay(reply) {
+  let step = 0;
+  return (thought) => {
+    step += 1;
+    if (step % 4 === 1) return reply(`thinking: ${thought}`);
+    if (step % 4 === 0) return reply('(Thinking.....)');
+    return undefined;
+  };
+}
+
 function formatHistory(turns) {
   if (!turns.length) return 'History: (none yet)';
   return (
@@ -75,9 +89,9 @@ function formatHistory(turns) {
     turns
       .map((turn, index) => {
         const answer = turn.assistant ?? '(no reply yet)';
-        return `${index + 1}. You: ${turn.user}\n   OpenCode: ${answer}`;
+        return `#############\n${index + 1}. You: ${turn.user}\n   OpenCode: ${answer}`;
       })
-      .join('\n')
+      .join('\n') + '\n#############'
   );
 }
 
@@ -247,12 +261,7 @@ export function createCommandHandler({
       }
 
       log('prompt', { sessionId: state.sessionId, pageId, length: text.length });
-      const answer = await promptAndWait(
-        client,
-        state.sessionId,
-        text,
-        (thought) => reply(`thinking: ${thought}`),
-      );
+      const answer = await promptAndWait(client, state.sessionId, text, thinkingRelay(reply));
       return reply(answer);
     } catch (err) {
       log('error', { message: err instanceof Error ? err.message : String(err) });

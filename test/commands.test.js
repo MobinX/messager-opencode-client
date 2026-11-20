@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createCommandHandler } from '../src/commands.js';
 import { splitText } from '../src/onlyorders.js';
 
-function makeClient({ sessions, models } = {}) {
+function makeClient({ sessions, models, thoughts = ['Let me check the answer.'] } = {}) {
   const sessionList = sessions ?? [
     { id: 's1', title: 'Session One', location: { directory: '/home/ubuntu/Oryxa' } },
     { id: 's2', title: 'Session Two', location: { directory: '/tmp' } },
@@ -58,11 +58,12 @@ function makeClient({ sessions, models } = {}) {
       subscribe: () =>
         (async function* () {
           yield { type: 'server.connected', data: {} };
-          // A completed reasoning step should reach Messenger as a thinking update.
-          yield {
-            type: 'session.reasoning.ended',
-            data: { sessionID: 's1', text: 'Let me check the answer.' },
-          };
+          for (const thought of thoughts) {
+            yield {
+              type: 'session.reasoning.ended',
+              data: { sessionID: 's1', text: thought },
+            };
+          }
           // Tool chatter must NOT reach Messenger.
           yield { type: 'session.tool.called', data: { sessionID: 's1', tool: 'write' } };
           yield {
@@ -117,7 +118,29 @@ test('attaching to a session sends confirmation, model and last turns without to
   assert.match(text, /OpenCode: second answer/);
   assert.match(text, /You: third question/);
   assert.match(text, /OpenCode: third answer/);
+  assert.match(text, /#############/);
   assert.doesNotMatch(text, /old question|old answer|thinking\.\.\.|write_tool/);
+});
+
+test('thinking relay sends 1st full, skips 2, sends compact 4th, then full 5th', async () => {
+  const replies = [];
+  const { client } = makeClient({
+    thoughts: ['step one', 'step two', 'step three', 'step four', 'step five'],
+  });
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
+  replies.length = 0;
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hi' } });
+  assert.deepEqual(replies, [
+    'thinking: step one',
+    '(Thinking.....)',
+    'thinking: step five',
+    'Hello from OpenCode',
+  ]);
 });
 
 test('!command runs directly and returns its output', async () => {
