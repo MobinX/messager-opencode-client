@@ -24,7 +24,7 @@ export async function getSession(client, sessionID) {
  * Last conversation turns: user messages paired with the assistant's final text only.
  * Reasoning and tool-call content is filtered out.
  */
-export async function getSessionHistory(client, sessionID, turns = 10) {
+export async function getSessionHistory(client, sessionID, turns = 3) {
   const result = await client.message.list({ sessionID, limit: 100, order: 'asc' });
   const messages = result.data ?? [];
   const history = [];

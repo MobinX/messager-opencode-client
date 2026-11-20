@@ -71,7 +71,7 @@ async function activeModel(client, state) {
 function formatHistory(turns) {
   if (!turns.length) return 'History: (none yet)';
   return (
-    'Last turns:\n' +
+    'Last 3 turns:\n' +
     turns
       .map((turn, index) => {
         const answer = turn.assistant ?? '(no reply yet)';
@@ -189,7 +189,7 @@ export function createCommandHandler({
           state.sessionId = session.id;
           if (model) state.lastModel = model;
           const active = await activeModel(client, state);
-          const history = await getSessionHistory(client, session.id, 10);
+          const history = await getSessionHistory(client, session.id, 3);
           return reply(
             `Attached successfully to new session: ${session.id}\ndirectory: ${directory}\nactive model: ${active ? `${active.providerID}/${active.modelID} — ${active.name ?? ''}` : 'default'}\n\n${formatHistory(history)}`,
           );
@@ -201,7 +201,7 @@ export function createCommandHandler({
         if (!session) return reply(`No session number ${number}. Send /session to see the list.`);
         state.sessionId = session.id;
         const active = await activeModel(client, state);
-        const history = await getSessionHistory(client, session.id, 10);
+        const history = await getSessionHistory(client, session.id, 3);
         return reply(
           `Attached successfully to session ${number}: ${session.id}\n${session.title ?? ''}\nactive model: ${active ? `${active.providerID}/${active.modelID} — ${active.name ?? ''}` : 'default'}\n\n${formatHistory(history)}`.trim(),
         );

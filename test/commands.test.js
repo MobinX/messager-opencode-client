@@ -33,6 +33,8 @@ function makeClient({ sessions, models } = {}) {
     message: {
       list: async () => ({
         data: [
+          { type: 'user', text: 'old question' },
+          { type: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
           { type: 'user', text: 'first question' },
           {
             type: 'assistant',
@@ -44,6 +46,8 @@ function makeClient({ sessions, models } = {}) {
           },
           { type: 'user', text: 'second question' },
           { type: 'assistant', content: [{ type: 'text', text: 'second answer' }] },
+          { type: 'user', text: 'third question' },
+          { type: 'assistant', content: [{ type: 'text', text: 'third answer' }] },
         ],
       }),
     },
@@ -109,7 +113,9 @@ test('attaching to a session sends confirmation, model and last turns without to
   assert.match(text, /OpenCode: first answer/);
   assert.match(text, /You: second question/);
   assert.match(text, /OpenCode: second answer/);
-  assert.doesNotMatch(text, /thinking\.\.\.|write_tool/);
+  assert.match(text, /You: third question/);
+  assert.match(text, /OpenCode: third answer/);
+  assert.doesNotMatch(text, /old question|old answer|thinking\.\.\.|write_tool/);
 });
 
 test('!command runs directly and returns its output', async () => {

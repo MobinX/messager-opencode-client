@@ -6,7 +6,7 @@ local OpenCode service, using the OnlyOrders external-service messaging API.
 Messages arriving on the OnlyOrders webhook are parsed:
 - `!command` runs a shell command locally and returns its output.
 - `/session`, `/session 2`, `/session new /path` manage OpenCode sessions. Attaching replies with
-  a confirmation, the active model and the last 10 turns (user messages + final replies only).
+  a confirmation, the active model and the last 3 turns (user messages + final replies only).
 - `/session pwd` shows the active session and model; `/model pwd` shows the active model.
 - `/exit` detaches from the current session.
 - `/model ls`, `/models 2` list and switch models.
