@@ -20,6 +20,7 @@ function initialState(defaultDirectory) {
     modelList: [],
     lastModel: null,
     cwd: defaultDirectory,
+    queue: Promise.resolve(),
   };
 }
 
@@ -261,8 +262,15 @@ export function createCommandHandler({
       }
 
       log('prompt', { sessionId: state.sessionId, pageId, length: text.length });
-      const answer = await promptAndWait(client, state.sessionId, text, thinkingRelay(reply));
-      return reply(answer);
+      // One OpenCode session must not run two prompt subscriptions at once: each subscription
+      // would capture the other's text deltas and produce mixed/duplicated final replies.
+      // Queue prompts per caller so turns are processed strictly one after another.
+      const runPrompt = async () => {
+        const answer = await promptAndWait(client, state.sessionId, text, thinkingRelay(reply));
+        return reply(answer);
+      };
+      state.queue = state.queue.then(runPrompt, runPrompt);
+      return state.queue;
     } catch (err) {
       log('error', { message: err instanceof Error ? err.message : String(err) });
       return reply(`Error: ${err instanceof Error ? err.message : String(err)}`);
