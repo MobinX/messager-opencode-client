@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createCommandHandler } from '../src/commands.js';
 import { splitText } from '../src/onlyorders.js';
 
-function makeClient({ sessions, models, thoughts = ['Let me check the answer.'] } = {}) {
+function makeClient({ sessions, models, thoughts = ['Let me check the answer.'], failStep = false } = {}) {
   const sessionList = sessions ?? [
     { id: 's1', title: 'Session One', location: { directory: '/home/ubuntu/Oryxa' } },
     { id: 's2', title: 'Session Two', location: { directory: '/tmp' } },
@@ -64,8 +64,14 @@ function makeClient({ sessions, models, thoughts = ['Let me check the answer.'] 
               data: { sessionID: 's1', text: thought },
             };
           }
-          // Tool chatter must NOT reach Messenger.
+          // Tool chatter must NOT reach Messenger. A failed tool step must not abort the reply.
           yield { type: 'session.tool.called', data: { sessionID: 's1', tool: 'write' } };
+          if (failStep) {
+            yield {
+              type: 'session.step.failed',
+              data: { sessionID: 's1', error: { message: 'one tool failed' } },
+            };
+          }
           yield {
             type: 'session.text.delta',
             data: { sessionID: 's1', assistantMessageID: 'a1', delta: 'Hello ' },
@@ -120,6 +126,21 @@ test('attaching to a session sends confirmation, model and last turns without to
   assert.match(text, /OpenCode: third answer/);
   assert.match(text, /#############/);
   assert.doesNotMatch(text, /old question|old answer|thinking\.\.\.|write_tool/);
+});
+
+test('a failed tool step does not prevent the final reply', async () => {
+  const replies = [];
+  const { client } = makeClient({ failStep: true });
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
+  replies.length = 0;
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hi' } });
+  assert.equal(replies.at(-1), 'Hello from OpenCode');
+  assert.doesNotMatch(replies.join('\n'), /one tool failed/);
 });
 
 test('thinking relay sends 1st full, skips 2, sends compact 4th, then full 5th', async () => {

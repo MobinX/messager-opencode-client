@@ -111,7 +111,6 @@ export async function promptAndWait(
           'session.execution.succeeded',
           'session.execution.failed',
           'session.execution.interrupted',
-          'session.step.failed',
         ],
         signal: controller.signal,
       })) {
@@ -130,14 +129,12 @@ export async function promptAndWait(
           (event.type === 'session.idle' ||
             event.type === 'session.execution.succeeded' ||
             event.type === 'session.execution.failed' ||
-            event.type === 'session.execution.interrupted' ||
-            event.type === 'session.step.failed') &&
+            event.type === 'session.execution.interrupted') &&
           data.sessionID === sessionID
         ) {
           if (
             event.type === 'session.execution.failed' ||
-            event.type === 'session.execution.interrupted' ||
-            event.type === 'session.step.failed'
+            event.type === 'session.execution.interrupted'
           ) {
             failed = data.error?.message ?? event.type;
           }
@@ -150,6 +147,7 @@ export async function promptAndWait(
     }
   })();
 
+  const startedAt = Date.now();
   try {
     // The event stream is live-only. Wait for the server.connected marker before sending the
     // prompt, otherwise the fast execution.failed / text events are missed entirely.
@@ -165,5 +163,29 @@ export async function promptAndWait(
   }
 
   if (failed) throw new Error(String(failed));
-  return Array.from(chunks.values()).join('\n').trim() || '(OpenCode returned no text)';
+
+  let replyText = Array.from(chunks.values()).join('\n').trim();
+  if (!replyText) {
+    // Fallback: a streamed text delta can be missed on a busy event source. Read the newest
+    // assistant message created by this prompt directly from the session history.
+    try {
+      const messages = await client.message.list({ sessionID, limit: 10, order: 'desc' });
+      const assistant = (messages.data ?? []).find(
+        (message) =>
+          message.type === 'assistant' &&
+          (message.time?.created ?? 0) >= startedAt - 2000 &&
+          (message.content ?? []).some((part) => part.type === 'text'),
+      );
+      if (assistant) {
+        replyText = (assistant.content ?? [])
+          .filter((part) => part.type === 'text')
+          .map((part) => String(part.text ?? ''))
+          .join('\n')
+          .trim();
+      }
+    } catch {
+      // The streamed text is the primary source; history is only a safety net.
+    }
+  }
+  return replyText || '(OpenCode returned no text)';
 }
