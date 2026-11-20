@@ -49,11 +49,12 @@ function envModel() {
   const combined = process.env.OPENCODE_MODEL?.trim();
   if (combined?.includes('/')) {
     const [providerID, ...rest] = combined.split('/');
-    return { id: rest.join('/'), providerID };
+    const modelID = rest.join('/');
+    return { modelID, providerID, name: combined };
   }
-  const id = process.env.OPENCODE_MODEL_ID?.trim();
+  const modelID = process.env.OPENCODE_MODEL_ID?.trim();
   const providerID = process.env.OPENCODE_PROVIDER_ID?.trim();
-  return id && providerID ? { id, providerID } : null;
+  return modelID && providerID ? { modelID, providerID, name: `${providerID}/${modelID}` } : null;
 }
 
 /**
