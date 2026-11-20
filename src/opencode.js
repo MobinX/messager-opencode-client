@@ -25,8 +25,12 @@ export async function getSession(client, sessionID) {
  * Reasoning and tool-call content is filtered out.
  */
 export async function getSessionHistory(client, sessionID, turns = 3) {
-  const result = await client.message.list({ sessionID, limit: 100, order: 'asc' });
-  const messages = result.data ?? [];
+  // Fetch newest-first (the SDK default) and sort by the message timestamp. Using order:'asc'
+  // with a limit would return the OLDEST N messages on a long session, not the latest turns.
+  const result = await client.message.list({ sessionID, limit: 100, order: 'desc' });
+  const messages = (result.data ?? [])
+    .filter((message) => message.type === 'user' || message.type === 'assistant')
+    .sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0));
   const history = [];
 
   for (const message of messages) {

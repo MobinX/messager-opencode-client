@@ -31,23 +31,25 @@ function makeClient({ sessions, models } = {}) {
         sessionList.find((s) => s.id === sessionID) ?? sessionList[0],
     },
     message: {
+      // SDK returns newest-first; timestamps are explicit so sorting is verifiable.
       list: async () => ({
         data: [
-          { type: 'user', text: 'old question' },
-          { type: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
-          { type: 'user', text: 'first question' },
+          { type: 'assistant', time: { created: 400 }, content: [{ type: 'text', text: 'third answer' }] },
+          { type: 'user', time: { created: 399 }, text: 'third question' },
+          { type: 'assistant', time: { created: 300 }, content: [{ type: 'text', text: 'second answer' }] },
+          { type: 'user', time: { created: 299 }, text: 'second question' },
           {
             type: 'assistant',
+            time: { created: 200 },
             content: [
               { type: 'reasoning', text: 'thinking...' },
               { type: 'text', text: 'first answer' },
               { type: 'tool', name: 'write' },
             ],
           },
-          { type: 'user', text: 'second question' },
-          { type: 'assistant', content: [{ type: 'text', text: 'second answer' }] },
-          { type: 'user', text: 'third question' },
-          { type: 'assistant', content: [{ type: 'text', text: 'third answer' }] },
+          { type: 'user', time: { created: 199 }, text: 'first question' },
+          { type: 'assistant', time: { created: 100 }, content: [{ type: 'text', text: 'old answer' }] },
+          { type: 'user', time: { created: 99 }, text: 'old question' },
         ],
       }),
     },
