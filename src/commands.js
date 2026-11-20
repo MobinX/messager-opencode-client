@@ -2,6 +2,8 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   createSession,
+  getSession,
+  getSessionHistory,
   listModels,
   listSessions,
   pickRandomModel,
@@ -42,6 +44,41 @@ function numberedModels(models) {
 function parseNumber(text) {
   const match = /^\s*\d+\s*$/.exec(text);
   return match ? Number(match[0]) : null;
+}
+
+/** Reads the active session's model and name, falling back to the caller's last choice. */
+async function activeModel(client, state) {
+  if (state.sessionId) {
+    try {
+      const session = await getSession(client, state.sessionId);
+      const ref = session?.model;
+      if (ref?.id && ref?.providerID) {
+        if (!state.modelList.length) state.modelList = await listModels(client);
+        const found = state.modelList.find(
+          (model) => model.modelID === ref.id && model.providerID === ref.providerID,
+        );
+        return found ?? { modelID: ref.id, providerID: ref.providerID, name: ref.id };
+      }
+    } catch {
+      // The session may have just been deleted; fall back to the remembered model.
+    }
+  }
+  if (state.lastModel) return state.lastModel;
+  if (!state.modelList.length) state.modelList = await listModels(client);
+  return state.modelList[0] ?? envModel();
+}
+
+function formatHistory(turns) {
+  if (!turns.length) return 'History: (none yet)';
+  return (
+    'Last turns:\n' +
+    turns
+      .map((turn, index) => {
+        const answer = turn.assistant ?? '(no reply yet)';
+        return `${index + 1}. You: ${turn.user}\n   OpenCode: ${answer}`;
+      })
+      .join('\n')
+  );
 }
 
 /** Optional deployment override, e.g. OPENCODE_MODEL=opencode/hy4-flash-free. */
@@ -129,6 +166,14 @@ export function createCommandHandler({
       const sessionMatch = /^\/session(?:\s+(.+))?$/i.exec(text);
       if (sessionMatch) {
         const arg = sessionMatch[1]?.trim();
+        if (/^pwd$/i.test(arg ?? '')) {
+          if (!state.sessionId) return reply('No active session. Connect one with /session first.');
+          const session = await getSession(client, state.sessionId);
+          const model = await activeModel(client, state);
+          return reply(
+            `Active session: ${session?.title ?? state.sessionId} (${state.sessionId})\ndirectory: ${session?.location?.directory ?? state.cwd}\nactive model: ${model ? `${model.providerID}/${model.modelID} — ${model.name ?? ''}` : 'default'}`,
+          );
+        }
         if (!arg) {
           const sessions = await refreshSessions(state);
           return reply(`OpenCode sessions:\n${numberedSessions(sessions)}`);
@@ -143,8 +188,10 @@ export function createCommandHandler({
           const session = await createSession(client, directory, model);
           state.sessionId = session.id;
           if (model) state.lastModel = model;
+          const active = await activeModel(client, state);
+          const history = await getSessionHistory(client, session.id, 10);
           return reply(
-            `new session attached: ${session.id}\ndirectory: ${directory}\nmodel: ${model ? `${model.providerID}/${model.modelID}` : 'default'}`,
+            `Attached successfully to new session: ${session.id}\ndirectory: ${directory}\nactive model: ${active ? `${active.providerID}/${active.modelID} — ${active.name ?? ''}` : 'default'}\n\n${formatHistory(history)}`,
           );
         }
         const number = parseNumber(arg);
@@ -153,13 +200,24 @@ export function createCommandHandler({
         const session = state.sessionList[number - 1];
         if (!session) return reply(`No session number ${number}. Send /session to see the list.`);
         state.sessionId = session.id;
-        return reply(`session ${number} attached: ${session.id}\n${session.title ?? ''}`.trim());
+        const active = await activeModel(client, state);
+        const history = await getSessionHistory(client, session.id, 10);
+        return reply(
+          `Attached successfully to session ${number}: ${session.id}\n${session.title ?? ''}\nactive model: ${active ? `${active.providerID}/${active.modelID} — ${active.name ?? ''}` : 'default'}\n\n${formatHistory(history)}`.trim(),
+        );
       }
 
       // /model ls and /models N (both spellings accepted)
       const modelMatch = /^\/models?(?:\s+(.+))?$/i.exec(text);
       if (modelMatch) {
         const arg = modelMatch[1]?.trim();
+        if (/^pwd$/i.test(arg ?? '')) {
+          const model = await activeModel(client, state);
+          if (!model) return reply('No active model. Connect a session first.');
+          return reply(
+            `Active model: ${model.providerID}/${model.modelID} — ${model.name ?? ''}\nsession: ${state.sessionId ?? 'none'}`,
+          );
+        }
         if (!arg || /^ls$/i.test(arg)) {
           const models = await refreshModels(state);
           return reply(`Connected models:\n${numberedModels(models)}`);

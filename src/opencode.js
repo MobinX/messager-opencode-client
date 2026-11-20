@@ -20,6 +20,31 @@ export async function getSession(client, sessionID) {
   return client.session.get({ sessionID });
 }
 
+/**
+ * Last conversation turns: user messages paired with the assistant's final text only.
+ * Reasoning and tool-call content is filtered out.
+ */
+export async function getSessionHistory(client, sessionID, turns = 10) {
+  const result = await client.message.list({ sessionID, limit: 100, order: 'asc' });
+  const messages = result.data ?? [];
+  const history = [];
+
+  for (const message of messages) {
+    if (message.type === 'user') {
+      history.push({ user: String(message.text ?? ''), assistant: null });
+    } else if (message.type === 'assistant' && history.length) {
+      const text = (message.content ?? [])
+        .filter((part) => part.type === 'text')
+        .map((part) => String(part.text ?? ''))
+        .join('\n')
+        .trim();
+      if (text) history[history.length - 1].assistant = text;
+    }
+  }
+
+  return history.slice(-turns);
+}
+
 export async function listModels(client) {
   const result = await client.model.list();
   return (result.data ?? []).filter((model) => model.enabled !== false && model.type !== 'image' && model.type !== 'video');

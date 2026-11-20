@@ -27,6 +27,25 @@ function makeClient({ sessions, models } = {}) {
       prompt: async (input) => {
         calls.prompt.push(input);
       },
+      get: async ({ sessionID }) =>
+        sessionList.find((s) => s.id === sessionID) ?? sessionList[0],
+    },
+    message: {
+      list: async () => ({
+        data: [
+          { type: 'user', text: 'first question' },
+          {
+            type: 'assistant',
+            content: [
+              { type: 'reasoning', text: 'thinking...' },
+              { type: 'text', text: 'first answer' },
+              { type: 'tool', name: 'write' },
+            ],
+          },
+          { type: 'user', text: 'second question' },
+          { type: 'assistant', content: [{ type: 'text', text: 'second answer' }] },
+        ],
+      }),
     },
     model: { list: async () => ({ data: modelList }) },
     event: {
@@ -69,6 +88,30 @@ function setup(overrides = {}) {
   return { replies, calls, sessionList, modelList, incoming };
 }
 
+test('/session pwd and /model pwd show active session and model', async () => {
+  const { replies, incoming } = setup();
+  await incoming('/session 1');
+  await incoming('/session pwd');
+  assert.match(replies.at(-1).text, /Active session: Session One \(s1\)/);
+  assert.match(replies.at(-1).text, /active model:/);
+  await incoming('/model pwd');
+  assert.match(replies.at(-1).text, /Active model:/);
+  assert.match(replies.at(-1).text, /session: s1/);
+});
+
+test('attaching to a session sends confirmation, model and last turns without tool chatter', async () => {
+  const { replies, incoming } = setup();
+  await incoming('/session 1');
+  const text = replies.at(-1).text;
+  assert.match(text, /Attached successfully to session 1/);
+  assert.match(text, /active model:/);
+  assert.match(text, /You: first question/);
+  assert.match(text, /OpenCode: first answer/);
+  assert.match(text, /You: second question/);
+  assert.match(text, /OpenCode: second answer/);
+  assert.doesNotMatch(text, /thinking\.\.\.|write_tool/);
+});
+
 test('!command runs directly and returns its output', async () => {
   const { replies, incoming } = setup();
   await incoming('!ls -la');
@@ -98,7 +141,7 @@ test('/session lists then /session 2 attaches', async () => {
   await incoming('/session');
   assert.match(replies.at(-1).text, /1\. Session One/);
   await incoming('/session 2');
-  assert.match(replies.at(-1).text, /session 2 attached: s2/);
+  assert.match(replies.at(-1).text, /Attached successfully to session 2: s2/);
 });
 
 test('prompt streams thinking updates then the final answer, without tool chatter', async () => {
@@ -142,6 +185,7 @@ test('/models 1 with no session asks the user to connect first', async () => {
 test('/session new creates a session in the given directory and remembers the chosen model', async () => {
   const { replies, calls, incoming } = setup();
   await incoming('/session new /home/oryxa');
+  assert.match(replies.at(-1).text, /Attached successfully to new session/);
   assert.equal(calls.create.at(-1).location.directory, '/home/oryxa');
   assert.ok(calls.create.at(-1).model, 'a default model was chosen');
 
