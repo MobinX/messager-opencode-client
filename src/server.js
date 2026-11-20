@@ -1,10 +1,28 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createCommandHandler } from './commands.js';
 import { connect } from './opencode.js';
-import { createService, registerWebhook, sendMessage } from './onlyorders.js';
+import { createService, deleteWebhook, registerWebhook, sendMessage } from './onlyorders.js';
 
 const PORT = Number(process.env.PORT ?? 8788);
 const DEFAULT_DIRECTORY = process.env.DEFAULT_DIRECTORY ?? process.cwd();
+const WEBHOOK_ID_FILE = path.resolve('.webhook-id');
+
+/** Replaces the previous webhook so re-registering a tunnel never leaves duplicates behind. */
+async function replaceWebhook(serviceId, url) {
+  let previous = null;
+  try {
+    previous = fs.readFileSync(WEBHOOK_ID_FILE, 'utf8').trim() || null;
+  } catch {
+    // No previous registration on this machine.
+  }
+  if (previous) await deleteWebhook(serviceId, previous);
+
+  const hook = await registerWebhook(serviceId, `${url.replace(/\/+$/, '')}/webhook`);
+  fs.writeFileSync(WEBHOOK_ID_FILE, hook.id);
+  return hook;
+}
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -39,7 +57,7 @@ async function main() {
 
   let webhookUrl = process.env.PUBLIC_WEBHOOK_URL?.trim();
   if (webhookUrl) {
-    const hook = await registerWebhook(serviceId, `${webhookUrl.replace(/\/+$/, '')}/webhook`);
+    const hook = await replaceWebhook(serviceId, webhookUrl);
     console.log(`[onlyorders] webhook registered: ${hook.url}`);
   }
 
@@ -71,7 +89,7 @@ async function main() {
       const next = url.searchParams.get('url');
       if (!next) return json(res, 400, { error: 'Pass ?url=https://<tunnel>' });
       try {
-        const hook = await registerWebhook(serviceId, `${next.replace(/\/+$/, '')}/webhook`);
+        const hook = await replaceWebhook(serviceId, next);
         webhookUrl = next;
         return json(res, 200, { registered: hook.url });
       } catch (err) {

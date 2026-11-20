@@ -26,6 +26,16 @@ export async function createService(name, uniqueName) {
   return call('/create', { name, uniqueName });
 }
 
+export async function deleteWebhook(serviceId, webhookId) {
+  try {
+    return await call(`/${serviceId}/webhook/${webhookId}`, undefined, 'DELETE');
+  } catch (err) {
+    // An already-deleted or missing hook must not block re-registration.
+    console.warn('[onlyorders] could not delete old webhook', webhookId, String(err));
+    return null;
+  }
+}
+
 export async function registerWebhook(serviceId, url) {
   return call(`/${serviceId}/webhook`, { url });
 }
