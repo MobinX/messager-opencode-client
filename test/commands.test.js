@@ -32,6 +32,7 @@ function makeClient({ sessions, models } = {}) {
     event: {
       subscribe: () =>
         (async function* () {
+          yield { type: 'server.connected', data: {} };
           // Chatter that must NOT reach Messenger.
           yield { type: 'session.reasoning.delta', data: { sessionID: 's1', delta: 'thinking...' } };
           yield { type: 'session.tool.called', data: { sessionID: 's1', tool: 'write' } };

@@ -44,6 +44,18 @@ function parseNumber(text) {
   return match ? Number(match[0]) : null;
 }
 
+/** Optional deployment override, e.g. OPENCODE_MODEL=opencode/hy4-flash-free. */
+function envModel() {
+  const combined = process.env.OPENCODE_MODEL?.trim();
+  if (combined?.includes('/')) {
+    const [providerID, ...rest] = combined.split('/');
+    return { id: rest.join('/'), providerID };
+  }
+  const id = process.env.OPENCODE_MODEL_ID?.trim();
+  const providerID = process.env.OPENCODE_PROVIDER_ID?.trim();
+  return id && providerID ? { id, providerID } : null;
+}
+
 /**
  * Builds the webhook handler. Dependencies are injected so the whole command surface can be
  * unit-tested without a live OpenCode service or Messenger connection.
@@ -123,7 +135,7 @@ export function createCommandHandler({
         if (/^new(?:\s+(.*))?$/i.test(arg)) {
           const dirMatch = /^new\s+(.+)$/i.exec(arg);
           const directory = dirMatch ? dirMatch[1].trim() : state.cwd ?? defaultDirectory;
-          let model = state.lastModel;
+          let model = state.lastModel ?? envModel();
           if (!model) {
             model = pickRandomModel(await refreshModels(state));
           }

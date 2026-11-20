@@ -62,29 +62,46 @@ export async function promptAndWait(client, sessionID, text, timeoutMs = 180_000
   const chunks = new Map();
   let done = false;
   let failed = null;
+  let markConnected;
+  const connected = new Promise((resolve) => { markConnected = resolve; });
 
   const subscription = (async () => {
     try {
       for await (const event of client.event.subscribe({
         types: [
+          'server.connected',
           'session.text.delta',
           'session.idle',
+          'session.execution.succeeded',
           'session.execution.failed',
           'session.execution.interrupted',
+          'session.step.failed',
         ],
         signal: controller.signal,
       })) {
+        if (event.type === 'server.connected') {
+          markConnected();
+          continue;
+        }
         const data = event.data ?? {};
         if (event.type === 'session.text.delta' && data.sessionID === sessionID) {
           const id = data.assistantMessageID ?? 'default';
           chunks.set(id, (chunks.get(id) ?? '') + (data.delta ?? ''));
         } else if (
           (event.type === 'session.idle' ||
+            event.type === 'session.execution.succeeded' ||
             event.type === 'session.execution.failed' ||
-            event.type === 'session.execution.interrupted') &&
+            event.type === 'session.execution.interrupted' ||
+            event.type === 'session.step.failed') &&
           data.sessionID === sessionID
         ) {
-          if (event.type !== 'session.idle') failed = event.type;
+          if (
+            event.type === 'session.execution.failed' ||
+            event.type === 'session.execution.interrupted' ||
+            event.type === 'session.step.failed'
+          ) {
+            failed = data.error?.message ?? event.type;
+          }
           done = true;
           break;
         }
@@ -95,6 +112,9 @@ export async function promptAndWait(client, sessionID, text, timeoutMs = 180_000
   })();
 
   try {
+    // The event stream is live-only. Wait for the server.connected marker before sending the
+    // prompt, otherwise the fast execution.failed / text events are missed entirely.
+    await Promise.race([connected, new Promise((resolve) => setTimeout(resolve, 5000))]);
     await client.session.prompt({ sessionID, text });
 
     const deadline = Date.now() + timeoutMs;
