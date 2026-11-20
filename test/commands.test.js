@@ -140,7 +140,7 @@ test('a failed tool step does not prevent the final reply', async () => {
   replies.length = 0;
   await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hi' } });
   assert.equal(replies.at(-1), 'Hello from OpenCode');
-  assert.doesNotMatch(replies.join('\n'), /one tool failed/);
+  assert.match(replies.join('\n'), /error \[session.step.failed\]: one tool failed/);
 });
 
 test('thinking relay sends 1st full, skips 2, sends compact 4th, then full 5th', async () => {

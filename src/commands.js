@@ -266,13 +266,21 @@ export function createCommandHandler({
       // would capture the other's text deltas and produce mixed/duplicated final replies.
       // Queue prompts per caller so turns are processed strictly one after another.
       const runPrompt = async () => {
-        const answer = await promptAndWait(client, state.sessionId, text, thinkingRelay(reply));
+        const answer = await promptAndWait(
+          client,
+          state.sessionId,
+          text,
+          thinkingRelay(reply),
+          (error) => reply(error),
+        );
         return reply(answer);
       };
       state.queue = state.queue.then(runPrompt, runPrompt);
       return state.queue;
     } catch (err) {
       log('error', { message: err instanceof Error ? err.message : String(err) });
+      // promptAndWait already forwarded streamed errors; don't send them a second time.
+      if (err?.forwarded) return undefined;
       return reply(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

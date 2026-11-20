@@ -15,7 +15,9 @@ Messages arriving on the OnlyOrders webhook are parsed:
 For a prompt, thinking is relayed in a compact pattern: the 1st step is sent in full as
 `thinking: ...`, the next 2 are skipped, the 4th becomes `(Thinking.....)`, then the pattern
 repeats (5th full, 8th compact, ...). The assistant's final answer is always sent. Tool-call
-chatter is ignored. Attachment history separates each of the last 3 turns with `#############`.
+chatter is ignored. OpenCode errors (step failures, retries, execution failures/interruptions and
+prompt/stream failures) are forwarded to Messenger as `error [type]: message`; each distinct error
+is sent once. Attachment history separates each of the last 3 turns with `#############`.
 
 ## Setup
 

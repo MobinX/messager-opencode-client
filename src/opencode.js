@@ -91,6 +91,7 @@ export async function promptAndWait(
   sessionID,
   text,
   onThinking = () => {},
+  onError = () => {},
   timeoutMs = 180_000,
 ) {
   const controller = new AbortController();
@@ -99,6 +100,25 @@ export async function promptAndWait(
   let failed = null;
   let markConnected;
   const connected = new Promise((resolve) => { markConnected = resolve; });
+
+  // One failure is often reported as a step failure and then an execution failure with the same
+  // message. Forward each distinct error once, but never swallow a different one.
+  const emittedErrors = new Set();
+  const errorSends = [];
+  const emitError = (message, type) => {
+    const text = String(message ?? '').trim();
+    if (!text || emittedErrors.has(text)) return;
+    emittedErrors.add(text);
+    const label = type ? `error [${type}]: ${text}` : `error: ${text}`;
+    errorSends.push(Promise.resolve(onError(label)).catch((err) => {
+      console.error('[opencode] failed to forward error', err);
+    }));
+  };
+  const fail = (message, type) => {
+    emitError(message, type);
+    failed = message;
+    done = true;
+  };
 
   const subscription = (async () => {
     try {
@@ -109,6 +129,8 @@ export async function promptAndWait(
           'session.text.delta',
           'session.idle',
           'session.execution.succeeded',
+          'session.step.failed',
+          'session.retry.scheduled',
           'session.execution.failed',
           'session.execution.interrupted',
         ],
@@ -126,24 +148,39 @@ export async function promptAndWait(
           const id = data.assistantMessageID ?? 'default';
           chunks.set(id, (chunks.get(id) ?? '') + (data.delta ?? ''));
         } else if (
-          (event.type === 'session.idle' ||
-            event.type === 'session.execution.succeeded' ||
+          (event.type === 'session.step.failed' ||
+            event.type === 'session.retry.scheduled' ||
             event.type === 'session.execution.failed' ||
             event.type === 'session.execution.interrupted') &&
           data.sessionID === sessionID
         ) {
+          const message =
+            data.error?.message ??
+            (event.type === 'session.execution.interrupted'
+              ? `execution interrupted (${data.reason ?? 'unknown'})`
+              : event.type);
+          emitError(message, event.type);
           if (
             event.type === 'session.execution.failed' ||
             event.type === 'session.execution.interrupted'
           ) {
-            failed = data.error?.message ?? event.type;
+            failed = message;
+            done = true;
+            break;
           }
+        } else if (
+          (event.type === 'session.idle' || event.type === 'session.execution.succeeded') &&
+          data.sessionID === sessionID
+        ) {
           done = true;
           break;
         }
       }
     } catch (err) {
-      if (!controller.signal.aborted) failed = err instanceof Error ? err.message : String(err);
+      if (!controller.signal.aborted) {
+        failed = err instanceof Error ? err.message : String(err);
+        emitError(failed, 'subscription');
+      }
     }
   })();
 
@@ -156,13 +193,24 @@ export async function promptAndWait(
 
     const deadline = Date.now() + timeoutMs;
     while (!done && Date.now() < deadline) await sleep(250);
-    if (!done) failed = 'timeout waiting for OpenCode reply';
+    if (!done) {
+      failed = 'timeout waiting for OpenCode reply';
+      emitError(failed, 'timeout');
+    }
+  } catch (err) {
+    failed = err instanceof Error ? err.message : String(err);
+    emitError(failed, 'prompt');
   } finally {
     controller.abort();
     await Promise.race([subscription.catch(() => {}), sleep(1000)]);
   }
 
-  if (failed) throw new Error(String(failed));
+  await Promise.allSettled(errorSends);
+  if (failed) {
+    const error = new Error(String(failed));
+    error.forwarded = true;
+    throw error;
+  }
 
   let replyText = Array.from(chunks.values()).join('\n').trim();
   if (!replyText) {
