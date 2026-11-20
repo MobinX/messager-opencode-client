@@ -33,8 +33,12 @@ function makeClient({ sessions, models } = {}) {
       subscribe: () =>
         (async function* () {
           yield { type: 'server.connected', data: {} };
-          // Chatter that must NOT reach Messenger.
-          yield { type: 'session.reasoning.delta', data: { sessionID: 's1', delta: 'thinking...' } };
+          // A completed reasoning step should reach Messenger as a thinking update.
+          yield {
+            type: 'session.reasoning.ended',
+            data: { sessionID: 's1', text: 'Let me check the answer.' },
+          };
+          // Tool chatter must NOT reach Messenger.
           yield { type: 'session.tool.called', data: { sessionID: 's1', tool: 'write' } };
           yield {
             type: 'session.text.delta',
@@ -97,13 +101,14 @@ test('/session lists then /session 2 attaches', async () => {
   assert.match(replies.at(-1).text, /session 2 attached: s2/);
 });
 
-test('prompt returns only the final assistant text, not thinking or tool chatter', async () => {
+test('prompt streams thinking updates then the final answer, without tool chatter', async () => {
   const { replies, calls, incoming } = setup();
   await incoming('/session 1');
   await incoming('what is 2+2?');
   assert.equal(calls.prompt.at(-1).text, 'what is 2+2?');
+  assert.equal(replies.at(-2).text, 'thinking: Let me check the answer.');
   assert.equal(replies.at(-1).text, 'Hello from OpenCode');
-  assert.doesNotMatch(replies.at(-1).text, /thinking|write_tool|calling tool/);
+  assert.doesNotMatch(replies.at(-1).text, /calling tool|write_tool/);
 });
 
 test('/exit detaches and the next prompt asks for a session again', async () => {

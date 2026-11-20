@@ -51,13 +51,19 @@ export async function switchModel(client, sessionID, model) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Sends a prompt and returns ONLY the assistant's final text.
+ * Sends a prompt, streams each completed reasoning (thinking) step through `onThinking`, and
+ * returns ONLY the assistant's final text.
  *
- * Reasoning deltas and tool-call events are deliberately not collected: the panel must not
- * forward "thinking..." or "calling tool write" chatter to Messenger. Text deltas are grouped by
- * assistantMessageID so a streamed answer is returned once, in order.
+ * Tool-call chatter is intentionally not forwarded. Text deltas are grouped by assistantMessageID
+ * so a streamed answer is returned once, in order.
  */
-export async function promptAndWait(client, sessionID, text, timeoutMs = 180_000) {
+export async function promptAndWait(
+  client,
+  sessionID,
+  text,
+  onThinking = () => {},
+  timeoutMs = 180_000,
+) {
   const controller = new AbortController();
   const chunks = new Map();
   let done = false;
@@ -70,6 +76,7 @@ export async function promptAndWait(client, sessionID, text, timeoutMs = 180_000
       for await (const event of client.event.subscribe({
         types: [
           'server.connected',
+          'session.reasoning.ended',
           'session.text.delta',
           'session.idle',
           'session.execution.succeeded',
@@ -84,7 +91,10 @@ export async function promptAndWait(client, sessionID, text, timeoutMs = 180_000
           continue;
         }
         const data = event.data ?? {};
-        if (event.type === 'session.text.delta' && data.sessionID === sessionID) {
+        if (event.type === 'session.reasoning.ended' && data.sessionID === sessionID) {
+          const thought = String(data.text ?? '').trim();
+          if (thought) onThinking(thought);
+        } else if (event.type === 'session.text.delta' && data.sessionID === sessionID) {
           const id = data.assistantMessageID ?? 'default';
           chunks.set(id, (chunks.get(id) ?? '') + (data.delta ?? ''));
         } else if (

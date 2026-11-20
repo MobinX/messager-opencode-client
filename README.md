@@ -10,8 +10,8 @@ Messages arriving on the OnlyOrders webhook are parsed:
 - `/model ls`, `/models 2` list and switch models.
 - Anything else is sent as a prompt to the attached session (or asks you to attach one first).
 
-Only the assistant's final text is forwarded to Messenger — reasoning deltas, tool calls and
-other OpenCode event chatter are ignored.
+For a prompt, each completed reasoning (thinking) step is forwarded as a `thinking: ...` message,
+followed by the assistant's final answer. Tool-call chatter is still ignored.
 
 ## Setup
 

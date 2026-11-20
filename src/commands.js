@@ -189,7 +189,12 @@ export function createCommandHandler({
       }
 
       log('prompt', { sessionId: state.sessionId, pageId, length: text.length });
-      const answer = await promptAndWait(client, state.sessionId, text);
+      const answer = await promptAndWait(
+        client,
+        state.sessionId,
+        text,
+        (thought) => reply(`thinking: ${thought}`),
+      );
       return reply(answer);
     } catch (err) {
       log('error', { message: err instanceof Error ? err.message : String(err) });
