@@ -3,3 +3,7 @@ node_modules/
 *.log
 .DS_Store
 .webhook-id
+db.json
+state.json
+msgctrl.log
+*.service

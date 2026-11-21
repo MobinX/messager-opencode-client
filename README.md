@@ -21,37 +21,49 @@ is sent once. OpenCode permission requests are forwarded with their id/action/re
 answered from Messenger with `/allow <id>`, `/always <id>`, or `/reject <id>`. Attachment history
 separates each of the last 3 turns with `#############`.
 
-## Setup
+## Setup with `msgctrl`
 
-Requires Node.js 22+ (tested on the nvm v24 toolchain) and the `opencode` CLI on `PATH`.
+Requires Node.js 22+ and both `cloudflared` and `opencode` on `PATH`.
 
 ```sh
 npm install
-cp .env.example .env
-```
-
-Set `ONLYORDERS_SERVICE_ID` to an existing service that already has a connected Facebook channel.
-If it is empty, the server creates a new service on boot (you will then need to connect a channel
-before replies can be sent).
-
-## Run behind a Cloudflare quick tunnel
-
-```sh
+npm link                       # makes the `msgctrl` command available
 export PATH="$HOME/.nvm/versions/node/v24.22.1/bin:$HOME/.opencode/bin:$PATH"
-cd /home/ubuntu/messager_opencode_client
 
-node --env-file=.env src/server.js &
-cloudflared tunnel --url http://localhost:8787
+msgctrl check                  # verify cloudflared and opencode
+msgctrl init                   # interactive first-time setup (see below)
 ```
 
-Copy the `https://<name>.trycloudflare.com` URL, then register it as the OnlyOrders webhook:
+`msgctrl init` asks for a service name and then:
+
+1. starts a Cloudflare quick tunnel;
+2. creates the OnlyOrders external service and registers `<tunnel>/webhook`;
+3. prints the Facebook connect URL — open it and choose the Page(s);
+4. lists the selected Pages and asks which one becomes the control panel;
+5. calls `/ext-service/:id/connectChannel` for that Page (which subscribes its webhook);
+6. confirms the OpenCode service and writes `~/.config/systemd/user/msgctrl.service`.
+
+All identifiers are stored in `db.json` (service id, webhook id, page id, channel id) and runtime
+events/tunnel URL changes in `state.json`. Both files are gitignored and written with `0600`.
+
+## Running and restarts
 
 ```sh
-curl "http://localhost:8788/register?url=https://<name>.trycloudflare.com"
+msgctrl start                  # foreground: tunnel → webhook sync → HTTP server
+msgctrl status                 # stored ids and latest state log entries
+msgctrl install                # (re)install the systemd user unit
+msgctrl uninstall              # remove it
 ```
 
-Or set `PUBLIC_WEBHOOK_URL` in `.env` before starting. The server registers
-`<url>/webhook` on startup.
+On every start (including after a device reboot, via systemd) the service starts a **new** quick
+tunnel, PUTs the new URL to the stored webhook id, and records the change in `state.json`. If the
+tunnel process dies it is restarted automatically and the webhook is re-pointed again.
+
+To run under systemd after `msgctrl init`:
+
+```sh
+systemctl --user enable --now msgctrl
+```
 
 Health check: `curl http://localhost:8788/health`
 

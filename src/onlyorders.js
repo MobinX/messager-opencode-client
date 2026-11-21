@@ -40,6 +40,22 @@ export async function registerWebhook(serviceId, url) {
   return call(`/${serviceId}/webhook`, { url });
 }
 
+/** Re-points an existing webhook id — used on every restart when the quick-tunnel URL changes. */
+export async function updateWebhook(serviceId, webhookId, url) {
+  return call(`/${serviceId}/webhook/${webhookId}`, { url }, 'PUT');
+}
+
+export async function getFacebookConnectOauthUrl(redirectUrl, businessId) {
+  return call('/getFacebookConnectOauthUrl', {
+    redirectUrl,
+    ...(businessId ? { businessId } : {}),
+  });
+}
+
+export async function connectExternalChannel(serviceId, body) {
+  return call(`/${serviceId}/connectChannel`, body);
+}
+
 /**
  * Sends a Messenger reply. Splits long answers because Meta caps a single text bubble.
  */

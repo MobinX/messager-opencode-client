@@ -1,5 +1,15 @@
+import { spawnSync } from 'node:child_process';
 import { OpenCode } from '@opencode/client';
 import { Service } from '@opencode/client/service';
+
+/** Cheap CLI-level check used by `msgctrl init` before the SDK connection is attempted. */
+export function isOpencodeAvailable() {
+  try {
+    return spawnSync('opencode', ['service', 'status'], { encoding: 'utf8' }).status === 0;
+  } catch {
+    return false;
+  }
+}
 
 /** Discovers (or starts) the local OpenCode service and returns a typed client. */
 export async function connect() {

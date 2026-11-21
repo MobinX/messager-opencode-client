@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { runInit } from '../src/init.js';
+import { startRuntime } from '../src/server.js';
+import { loadDb, loadState } from '../src/config.js';
+import { installUnit, uninstallUnit } from '../src/systemd.js';
+import { isInstalled as tunnelInstalled } from '../src/tunnel.js';
+import { isOpencodeAvailable } from '../src/opencode.js';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const [command = 'help', ...args] = process.argv.slice(2);
+
+const HELP = `msgctrl — Messenger OpenCode control panel
+
+Usage:
+  msgctrl init               Interactive first-time setup
+  msgctrl start              Run the service (tunnel + webhook sync + messenger bridge)
+  msgctrl status             Show stored config and recent state
+  msgctrl install            Install the systemd user unit
+  msgctrl uninstall          Remove the systemd user unit
+  msgctrl check              Check cloudflared / opencode availability
+  msgctrl help               Show this help
+`;
+
+async function status() {
+  const db = loadDb();
+  const state = loadState();
+  console.log(JSON.stringify({
+    serviceId: db.serviceId ?? null,
+    serviceName: db.serviceName ?? null,
+    pageId: db.pageId ?? null,
+    pageName: db.pageName ?? null,
+    webhookId: db.webhookId ?? null,
+    webhookUrl: db.webhookUrl ?? null,
+    tunnelUrl: state.tunnelUrl ?? null,
+    webhookUpdatedAt: state.webhookUpdatedAt ?? null,
+    initialized: Boolean(state.initialized),
+    recentLogs: state.logs.slice(-5),
+  }, null, 2));
+}
+
+async function main() {
+  switch (command) {
+    case 'init':
+      await runInit();
+      break;
+    case 'start':
+      await startRuntime();
+      break;
+    case 'status':
+      await status();
+      break;
+    case 'check':
+      console.log(`cloudflared: ${tunnelInstalled() ? 'ok' : 'missing'}`);
+      console.log(`opencode:    ${isOpencodeAvailable() ? 'ok' : 'missing'}`);
+      break;
+    case 'install': {
+      const result = installUnit({
+        user: process.env.USER ?? 'ubuntu',
+        workdir: ROOT,
+        nodeBin: process.execPath,
+        port: Number(process.env.PORT ?? 8788),
+        defaultDirectory: loadDb().defaultDirectory,
+        system: args.includes('--system'),
+      });
+      console.log(`unit: ${result.path} (daemon-reload ${result.reloaded ? 'ok' : 'skipped'})`);
+      break;
+    }
+    case 'uninstall': {
+      const result = uninstallUnit({ system: args.includes('--system') });
+      console.log(`removed: ${result.path}`);
+      break;
+    }
+    case 'help':
+    case '--help':
+    case '-h':
+      console.log(HELP);
+      break;
+    default:
+      console.error(`Unknown command: ${command}\n\n${HELP}`);
+      process.exitCode = 1;
+  }
+}
+
+main().catch((err) => {
+  console.error(`[msgctrl ${command}]`, err instanceof Error ? err.message : err);
+  process.exitCode = 1;
+});
