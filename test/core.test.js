@@ -13,6 +13,7 @@ const { extractTunnelUrl } = await import('../src/tunnel.js');
 const { unitContent } = await import('../src/systemd.js');
 const { findBinary, activeSystemdUnit, detectServices } = await import('../src/services.js');
 const { runInit } = await import('../src/init.js');
+const { createTerminal } = await import('../src/terminal.js');
 const { createHttpServer } = await import('../src/server.js');
 
 function freePort() {
@@ -85,6 +86,25 @@ test('callback server records selected pages from OnlyOrders', async () => {
   assert.equal(received[0].pageId, '123');
   assert.equal(loadState().selectedPages[0].pageName, 'My Page');
   server.close();
+});
+
+test('terminal buffers fast output into one message but streams long-running output', async () => {
+  const chunks = [];
+  const terminal = createTerminal({
+    cwd: '/tmp',
+    streamAfterMs: 80,
+    onOutput: (text) => chunks.push(text),
+  });
+
+  await terminal.run("printf 'one\\ntwo\\nthree\\n'");
+  assert.deepEqual(chunks, ['one\ntwo\nthree\n']);
+
+  chunks.length = 0;
+  await terminal.run("printf 'slow1\\n'; sleep 0.25; printf 'slow2\\n'");
+  assert.ok(chunks.length >= 2, `expected streaming chunks, got ${JSON.stringify(chunks)}`);
+  assert.equal(chunks[0], 'slow1\n');
+  assert.match(chunks.join(''), /slow2/);
+  terminal.kill();
 });
 
 test('init flow creates service, webhook, connects chosen page and stores ids', async () => {

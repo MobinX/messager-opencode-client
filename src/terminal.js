@@ -6,8 +6,12 @@ import { randomBytes } from 'node:crypto';
  *
  * Commands are written to one long-lived bash process, so `cd`, exports and other shell state
  * survive between messages. Each command is followed by a uniquely tokened printf marker, which
- * lets us know when it finished and what the current directory is. Output lines are forwarded as
- * they arrive, so long-running commands (tail -f, a log stream, a server) keep reporting.
+ * lets us know when it finished and what the current directory is.
+ *
+ * Fast commands (cat, ls, pwd) are buffered and sent as one complete message when the marker
+ * arrives. If a command is still running after `streamAfterMs`, the buffer is flushed and every
+ * following line is forwarded immediately — so `tail -f` and long loops keep reporting without
+ * splitting ordinary command output into one Messenger message per line.
  */
 export function createTerminal({
   cwd = '/home',
@@ -15,6 +19,7 @@ export function createTerminal({
   onOutput = () => {},
   onExit = () => {},
   env = process.env,
+  streamAfterMs = 800,
 } = {}) {
   const token = randomBytes(6).toString('hex');
   const markerRe = new RegExp(`@@MSGCTRL_${token}_(\\d+)_(\\d+)__(.*)@@`);
@@ -30,6 +35,22 @@ export function createTerminal({
   let closed = false;
   const waiting = new Map();
 
+  let buffer = [];
+  let streaming = false;
+  let streamTimer = null;
+
+  const clearStreamTimer = () => {
+    if (streamTimer) clearTimeout(streamTimer);
+    streamTimer = null;
+  };
+
+  const flushBuffer = () => {
+    if (!buffer.length) return;
+    const text = buffer.join('');
+    buffer = [];
+    onOutput(text);
+  };
+
   const consume = (chunk) => {
     pending += String(chunk);
     let index;
@@ -43,13 +64,29 @@ export function createTerminal({
         const entry = waiting.get(Number(id));
         currentCwd = where || currentCwd;
         waiting.delete(Number(id));
+        clearStreamTimer();
+        flushBuffer();
+        streaming = false;
         if (entry) {
           clearTimeout(entry.timer);
           entry.resolve({ code: Number(code), cwd: currentCwd });
         }
         continue;
       }
-      if (line.length) onOutput(`${line}\n`);
+      if (!line.length) continue;
+
+      if (waiting.size > 0 && !streaming) {
+        buffer.push(`${line}\n`);
+        if (!streamTimer) {
+          streamTimer = setTimeout(() => {
+            streaming = true;
+            flushBuffer();
+          }, streamAfterMs);
+        }
+      } else {
+        // Either a long-running command in streaming mode, or output from a background job.
+        onOutput(`${line}\n`);
+      }
     }
   };
 
@@ -57,6 +94,8 @@ export function createTerminal({
   child.stderr?.on('data', consume);
 
   const finishAll = (code) => {
+    clearStreamTimer();
+    flushBuffer();
     for (const entry of waiting.values()) {
       clearTimeout(entry.timer);
       entry.reject(new Error(`terminal exited before command finished (code ${code})`));
@@ -90,6 +129,12 @@ export function createTerminal({
     run(command, timeoutMs = 120_000) {
       if (closed) return Promise.reject(new Error('terminal is closed'));
       const id = nextId++;
+      if (waiting.size === 0) {
+        // Start of a new command: discard any state left by the previous one.
+        clearStreamTimer();
+        buffer = [];
+        streaming = false;
+      }
       const script =
         `${String(command)}\n` +
         `printf '\\n@@MSGCTRL_${token}_${id}_%d__%s@@\\n' "$?" "$PWD"\n`;

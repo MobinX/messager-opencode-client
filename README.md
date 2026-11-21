@@ -161,7 +161,7 @@ Health check: `curl http://localhost:8788/health`
 `/bash` spawns one persistent bash process for that Messenger user, starting at `/home`:
 
 - `cd /sbin` changes the directory; the next `pwd`/`ls` runs in `/sbin`. Shell state (exports, etc.) survives too.
-- Output is forwarded **as it is produced**, so `tail -f`, a server, or a long loop keeps reporting line by line.
+- Fast commands (`cat`, `ls`, `pwd`) are buffered and delivered as **one complete reply**; long-running commands (`tail -f`, a server, a loop) switch to streaming after ~800 ms and then keep reporting line by line.
 - `exit` typed in the terminal or `/exit` from Messenger closes it; the bot replies `terminal exited (code 0)` or `terminal closed`.
 - After closing, normal behavior resumes: attached sessions receive prompts, otherwise you get the session list.
 
