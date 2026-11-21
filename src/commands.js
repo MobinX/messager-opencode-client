@@ -21,6 +21,7 @@ function initialState(defaultDirectory) {
     lastModel: null,
     cwd: defaultDirectory,
     queue: Promise.resolve(),
+    permissions: new Map(),
   };
 }
 
@@ -81,6 +82,15 @@ function thinkingRelay(reply) {
     if (step % 4 === 0) return reply('(Thinking.....)');
     return undefined;
   };
+}
+
+function formatPermission(permission) {
+  const resources = permission.resources ? `\nresources: ${permission.resources}` : '';
+  const message = permission.message ? `\nmessage: ${permission.message}` : '';
+  return (
+    `permission asked [${permission.id}]: ${permission.action}${resources}${message}` +
+    `\nreply: /allow ${permission.id} | /always ${permission.id} | /reject ${permission.id}`
+  );
 }
 
 function formatHistory(turns) {
@@ -253,6 +263,25 @@ export function createCommandHandler({
         return reply(`session ${state.sessionId} now uses ${model.providerID}/${model.modelID}`);
       }
 
+      // Permission decisions: /allow <id>, /always <id>, /reject <id>
+      const permissionMatch = /^\/(allow|always|reject)\s+(.+)$/i.exec(text);
+      if (permissionMatch) {
+        const decision =
+          permissionMatch[1].toLowerCase() === 'allow'
+            ? 'once'
+            : permissionMatch[1].toLowerCase();
+        const id = permissionMatch[2].trim();
+        const pending = state.permissions.get(id);
+        if (!pending) return reply(`No pending permission with id ${id}`);
+        await client.permission.reply({
+          sessionID: pending.sessionID,
+          requestID: pending.id,
+          decision,
+        });
+        state.permissions.delete(pending.id);
+        return reply(`permission ${decision}: ${pending.id}`);
+      }
+
       // Anything else is a prompt, but only when a session is attached.
       if (!state.sessionId) {
         const sessions = await refreshSessions(state);
@@ -272,6 +301,14 @@ export function createCommandHandler({
           text,
           thinkingRelay(reply),
           (error) => reply(error),
+          (permission) => {
+            if (permission.resolved) {
+              state.permissions.delete(permission.id);
+              return reply(`permission resolved: ${permission.id}`);
+            }
+            state.permissions.set(permission.id, permission);
+            return reply(formatPermission(permission));
+          },
         );
         return reply(answer);
       };

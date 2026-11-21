@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import { createCommandHandler } from '../src/commands.js';
 import { splitText } from '../src/onlyorders.js';
 
-function makeClient({ sessions, models, thoughts = ['Let me check the answer.'], failStep = false } = {}) {
+function makeClient({
+  sessions,
+  models,
+  thoughts = ['Let me check the answer.'],
+  failStep = false,
+  permission = false,
+} = {}) {
   const sessionList = sessions ?? [
     { id: 's1', title: 'Session One', location: { directory: '/home/ubuntu/Oryxa' } },
     { id: 's2', title: 'Session Two', location: { directory: '/tmp' } },
@@ -12,7 +18,7 @@ function makeClient({ sessions, models, thoughts = ['Let me check the answer.'],
     { providerID: 'opencode', modelID: 'm1', name: 'Model One', type: 'chat', enabled: true },
     { providerID: 'anthropic', modelID: 'm2', name: 'Model Two', type: 'chat', enabled: true },
   ];
-  const calls = { create: [], switchModel: [], prompt: [] };
+  const calls = { create: [], switchModel: [], prompt: [], permissionReply: [] };
 
   const client = {
     session: {
@@ -54,6 +60,9 @@ function makeClient({ sessions, models, thoughts = ['Let me check the answer.'],
       }),
     },
     model: { list: async () => ({ data: modelList }) },
+    permission: {
+      reply: async (input) => calls.permissionReply.push(input),
+    },
     event: {
       subscribe: () =>
         (async function* () {
@@ -70,6 +79,18 @@ function makeClient({ sessions, models, thoughts = ['Let me check the answer.'],
             yield {
               type: 'session.step.failed',
               data: { sessionID: 's1', error: { message: 'one tool failed' } },
+            };
+          }
+          if (permission) {
+            yield {
+              type: 'permission.asked',
+              data: {
+                id: 'perm-1',
+                sessionID: 's1',
+                action: 'write',
+                resources: ['/tmp/file.txt'],
+                message: 'Allow writing the file?',
+              },
             };
           }
           yield {
@@ -126,6 +147,30 @@ test('attaching to a session sends confirmation, model and last turns without to
   assert.match(text, /OpenCode: third answer/);
   assert.match(text, /#############/);
   assert.doesNotMatch(text, /old question|old answer|thinking\.\.\.|write_tool/);
+});
+
+test('permission requests are forwarded and can be answered from Messenger', async () => {
+  const replies = [];
+  const { client, calls } = makeClient({ permission: true });
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
+  replies.length = 0;
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hi' } });
+  const forwarded = replies.find((r) => r.startsWith('permission asked'));
+  assert.match(forwarded, /permission asked \[perm-1\]: write/);
+  assert.match(forwarded, /resources: \/tmp\/file\.txt/);
+  assert.match(forwarded, /\/allow perm-1/);
+
+  replies.length = 0;
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/allow perm-1' } });
+  assert.deepEqual(calls.permissionReply, [
+    { sessionID: 's1', requestID: 'perm-1', decision: 'once' },
+  ]);
+  assert.equal(replies.at(-1), 'permission once: perm-1');
 });
 
 test('a failed tool step does not prevent the final reply', async () => {

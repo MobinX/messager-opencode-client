@@ -92,6 +92,7 @@ export async function promptAndWait(
   text,
   onThinking = () => {},
   onError = () => {},
+  onPermission = () => {},
   timeoutMs = 180_000,
 ) {
   const controller = new AbortController();
@@ -125,6 +126,8 @@ export async function promptAndWait(
       for await (const event of client.event.subscribe({
         types: [
           'server.connected',
+          'permission.asked',
+          'permission.replied',
           'session.reasoning.ended',
           'session.text.delta',
           'session.idle',
@@ -141,7 +144,26 @@ export async function promptAndWait(
           continue;
         }
         const data = event.data ?? {};
-        if (event.type === 'session.reasoning.ended' && data.sessionID === sessionID) {
+        if (event.type === 'permission.asked' && data.sessionID === sessionID) {
+          const id = String(data.id ?? '');
+          const action = String(data.action ?? 'permission');
+          const resources = Array.isArray(data.resources) ? data.resources.join(', ') : '';
+          const message = String(data.message ?? '').trim();
+          onPermission({
+            id,
+            sessionID,
+            action,
+            resources,
+            message,
+            raw: data,
+          });
+        } else if (
+          event.type === 'permission.replied' &&
+          data.sessionID === sessionID &&
+          data.requestID
+        ) {
+          onPermission({ resolved: true, id: String(data.requestID), sessionID, raw: data });
+        } else if (event.type === 'session.reasoning.ended' && data.sessionID === sessionID) {
           const thought = String(data.text ?? '').trim();
           if (thought) onThinking(thought);
         } else if (event.type === 'session.text.delta' && data.sessionID === sessionID) {
