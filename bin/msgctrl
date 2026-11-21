@@ -6,8 +6,7 @@ import { runInit } from '../src/init.js';
 import { startRuntime } from '../src/server.js';
 import { loadDb, loadState } from '../src/config.js';
 import { installUnit, uninstallUnit } from '../src/systemd.js';
-import { isInstalled as tunnelInstalled } from '../src/tunnel.js';
-import { isOpencodeAvailable } from '../src/opencode.js';
+import { detectServices, activeSystemdUnit } from '../src/services.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const [command = 'help', ...args] = process.argv.slice(2);
@@ -53,10 +52,23 @@ async function main() {
     case 'status':
       await status();
       break;
-    case 'check':
-      console.log(`cloudflared: ${tunnelInstalled() ? 'ok' : 'missing'}`);
-      console.log(`opencode:    ${isOpencodeAvailable() ? 'ok' : 'missing'}`);
+    case 'check': {
+      const info = detectServices();
+      const fmt = (units) => {
+        const active = activeSystemdUnit(units);
+        if (active) return `${active.active} (${active.scope}, ${active.unit})`;
+        if (!info.systemd.availableSystem && !info.systemd.availableUser) return 'systemd bus unavailable';
+        return units.map((u) => `${u.scope}:${u.active}`).join(', ');
+      };
+      console.log(`cloudflared binary: ${info.binaries.cloudflared ?? 'MISSING'}`);
+      console.log(`opencode binary:    ${info.binaries.opencode ?? 'MISSING'}`);
+      console.log(`opencode runtime:   ${info.runtime.opencode.url ?? info.runtime.opencode.error ?? 'not running'}`);
+      console.log(`systemd available:  system=${info.systemd.availableSystem} user=${info.systemd.availableUser}`);
+      console.log(`opencode systemd:  ${fmt(info.systemd.opencode)}`);
+      console.log(`cloudflared systemd: ${fmt(info.systemd.cloudflared)}`);
+      console.log(`msgctrl systemd:   ${fmt(info.systemd.msgctrl)}`);
       break;
+    }
     case 'install': {
       const result = installUnit({
         user: process.env.USER ?? 'ubuntu',

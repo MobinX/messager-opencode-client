@@ -7,6 +7,7 @@ import * as systemd from './systemd.js';
 import { loadDb, saveDb, saveState, logState } from './config.js';
 import { createHttpServer } from './server.js';
 import { connect, isOpencodeAvailable } from './opencode.js';
+import { detectServices, activeSystemdUnit } from './services.js';
 
 const PORT = Number(process.env.PORT ?? 8788);
 
@@ -43,6 +44,7 @@ export async function runInit({
   tunnel = { startTunnel, isInstalled: tunnelInstalled },
   system = systemd,
   opencode = { isOpencodeAvailable, connect },
+  services = { detectServices, activeSystemdUnit },
   port = PORT,
   waitTimeoutMs = 5 * 60 * 1000,
 } = {}) {
@@ -51,8 +53,27 @@ export async function runInit({
   if (!ask) throw new Error('io.ask is required');
 
   print('=== msgctrl init ===');
-  print(`cloudflared: ${tunnel.isInstalled() ? 'found' : 'MISSING — install it before continuing'}`);
-  print(`opencode:    ${opencode.isOpencodeAvailable() ? 'found' : 'MISSING — install/start it before continuing'}`);
+  const info = services.detectServices?.() ?? null;
+  print(`cloudflared binary: ${info?.binaries?.cloudflared ?? (tunnel.isInstalled() ? 'found' : 'MISSING')}`);
+  print(`opencode binary:    ${info?.binaries?.opencode ?? 'unknown'}`);
+  print(`opencode runtime:   ${info?.runtime?.opencode?.url ?? (opencode.isOpencodeAvailable() ? 'available' : 'MISSING')}`);
+  if (info) {
+    const fmt = (units) => {
+      const active = services.activeSystemdUnit?.(units);
+      if (active) return `${active.active} (${active.scope}: ${active.unit})`;
+      if (!info.systemd.availableSystem && !info.systemd.availableUser) return 'systemd bus unavailable';
+      return units.map((u) => `${u.scope}:${u.active}`).join(', ');
+    };
+    print(`systemd opencode:  ${fmt(info.systemd.opencode)}`);
+    print(`systemd cloudflared: ${fmt(info.systemd.cloudflared)}`);
+    print(`systemd msgctrl:   ${fmt(info.systemd.msgctrl)}`);
+    if (!services.activeSystemdUnit?.(info.systemd.opencode) && info.runtime?.opencode?.url) {
+      print('[warn] OpenCode is reachable but not via a systemd unit — it may stop on reboot.');
+    }
+    if (!services.activeSystemdUnit?.(info.systemd.cloudflared)) {
+      print('[info] No system cloudflared unit is active; msgctrl starts its own quick tunnel at start.');
+    }
+  }
   if (!tunnel.isInstalled() || !opencode.isOpencodeAvailable()) {
     throw new Error('cloudflared and opencode are both required');
   }

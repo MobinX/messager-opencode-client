@@ -1,15 +1,14 @@
-import { spawnSync } from 'node:child_process';
 import { OpenCode } from '@opencode/client';
 import { Service } from '@opencode/client/service';
+import { opencodeBinary, opencodeRuntime } from './services.js';
 
 /** Cheap CLI-level check used by `msgctrl init` before the SDK connection is attempted. */
 export function isOpencodeAvailable() {
-  try {
-    return spawnSync('opencode', ['service', 'status'], { encoding: 'utf8' }).status === 0;
-  } catch {
-    return false;
-  }
+  const runtime = opencodeRuntime(opencodeBinary());
+  return Boolean(runtime.url) || runtime.error === null;
 }
+
+export { opencodeBinary };
 
 /** Discovers (or starts) the local OpenCode service and returns a typed client. */
 export async function connect() {

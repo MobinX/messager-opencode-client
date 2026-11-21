@@ -59,7 +59,27 @@ export PATH="$HOME/.nvm/versions/node/v24.22.1/bin:$HOME/.opencode/bin:$PATH"
 cd /home/ubuntu/messager_opencode_client
 npm install
 npm link          # installs the global `msgctrl` command
-msgctrl check     # verifies cloudflared + opencode
+msgctrl check     # verifies binaries, runtime endpoint and systemd units
+```
+
+`msgctrl check` reports:
+
+```
+cloudflared binary: /usr/local/bin/cloudflared
+opencode binary:    /home/ubuntu/.opencode/bin/opencode
+opencode runtime:   http://127.0.0.1:49374
+systemd available:  system=true user=false
+opencode systemd:  active (system, opencode-server.service)
+cloudflared systemd: active (system, cloudflared-quick.service)
+msgctrl systemd:   system:not-found, user:not-found
+```
+
+It finds binaries even when they are outside `PATH`, reads the live OpenCode endpoint from
+`opencode service status`, and checks both system and user systemd scopes. `msgctrl init` runs the
+same preflight and warns when OpenCode is reachable but has no systemd unit (it could stop on
+reboot). The system `cloudflared-quick.service`/`opencode-server.service` pair (if present) may be
+pointed at another local port; `msgctrl` always starts **its own** quick tunnel to its own HTTP
+receiver (`PORT`, default 8788), so the two do not conflict.
 ```
 
 ## First-time setup: `msgctrl init`

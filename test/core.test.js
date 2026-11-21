@@ -11,6 +11,7 @@ process.env.MSGCTRL_HOME = tmp;
 const { loadDb, saveDb, loadState, saveState, logState, dbPath, statePath } = await import('../src/config.js');
 const { extractTunnelUrl } = await import('../src/tunnel.js');
 const { unitContent } = await import('../src/systemd.js');
+const { findBinary, activeSystemdUnit, detectServices } = await import('../src/services.js');
 const { runInit } = await import('../src/init.js');
 const { createHttpServer } = await import('../src/server.js');
 
@@ -48,6 +49,21 @@ test('systemd unit contains restart and executable path', () => {
   assert.match(unit, /Restart=always/);
   assert.match(unit, /Environment=PORT=9999/);
   assert.match(unit, /\/usr\/bin\/node \/home\/ubuntu\/app\/bin\/msgctrl start/);
+});
+
+test('service detection locates binaries and reports systemd state without throwing', () => {
+  assert.equal(findBinary('definitely-not-a-real-binary-xyz'), null);
+  assert.equal(
+    activeSystemdUnit([
+      { unit: 'a.service', scope: 'user', active: 'inactive' },
+      { unit: 'b.service', scope: 'system', active: 'active' },
+    ])?.unit,
+    'b.service',
+  );
+  const info = detectServices();
+  assert.ok('binaries' in info && 'systemd' in info && 'runtime' in info);
+  assert.ok(Array.isArray(info.systemd.opencode));
+  assert.ok(Array.isArray(info.systemd.cloudflared));
 });
 
 test('callback server records selected pages from OnlyOrders', async () => {
