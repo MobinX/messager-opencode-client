@@ -81,7 +81,6 @@ same preflight and warns when OpenCode is reachable but has no systemd unit (it 
 reboot). The system `cloudflared-quick.service`/`opencode-server.service` pair (if present) may be
 pointed at another local port; `msgctrl` always starts **its own** quick tunnel to its own HTTP
 receiver (`PORT`, default 8788), so the two do not conflict.
-```
 
 ## First-time setup: `msgctrl init`
 
@@ -206,6 +205,18 @@ src/systemd.js       systemd user-unit generation/install
 test/                node:test suites (commands + core/config/init)
 ```
 
+## Reliability
+
+- **Messenger send failures are non-fatal.** If OnlyOrders/Meta rejects a reply (for example
+  `graph_send_failed 100:2018034`), the error is logged as `reply-error` in `state.json` and the
+  webhook receiver keeps running.
+- **Tunnel failures are non-fatal.** A dead cloudflared process is restarted with backoff and the
+  webhook URL is re-synced; the event is logged.
+- **One webhook only.** `msgctrl` always PUTs the stored webhook id instead of creating a new one,
+  so restarts and `GET /register` never leave duplicate webhooks that multiply replies.
+- **Prompts are serialized** per Messenger user, so two fast messages cannot produce mixed replies.
+- **State is observable.** `msgctrl status` shows the last log entries from `state.json`.
+
 ## Tests
 
 ```sh
@@ -213,9 +224,10 @@ export PATH="$HOME/.nvm/versions/node/v24.22.1/bin:$HOME/.opencode/bin:$PATH"
 npm test
 ```
 
-20 tests cover command routing, history sorting, thinking relay, error forwarding, permission
-handling, config persistence, tunnel parsing, systemd unit generation, the callback receiver, and
-the full injected init flow. No live Messenger or OnlyOrders account is needed.
+26 tests cover command routing, history sorting, thinking relay, error forwarding, permission
+handling, config persistence, tunnel parsing, systemd unit generation, service detection, the
+stateful terminal (buffering + streaming), busy-session attach reporting, the callback receiver,
+and the full injected init flow. No live Messenger or OnlyOrders account is needed.
 
 ## Troubleshooting
 
@@ -225,6 +237,7 @@ the full injected init flow. No live Messenger or OnlyOrders account is needed.
 | `opencode: missing` | Install opencode CLI v2, start its service, re-run `msgctrl check` |
 | `EADDRINUSE :8788` | Another msgctrl/node process is using the port; stop it with `pkill -f 'msgctrl start'` |
 | No reply to a prompt | Check `state.json` logs and `msgctrl status`; ensure `pageId` is in `db.json` and the webhook is the only live one |
+| `reply-error` / send 500 | OnlyOrders/Meta refused the send; the service stays up. Recheck the recipient/page and retry later |
 | Duplicate replies | Verify only one live webhook exists for the service; `msgctrl start` always PUTs the same stored webhook id |
 | Webhook stopped after restart | `state.json` should show a fresh `webhookUpdatedAt`; if not, re-run `msgctrl start` |
 | systemd unit not active | Run `systemctl --user daemon-reload && systemctl --user enable --now msgctrl` |
