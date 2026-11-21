@@ -12,6 +12,7 @@ import {
   promptAndWait,
   switchModel,
 } from './opencode.js';
+import { createTerminal as realCreateTerminal } from './terminal.js';
 
 const run = promisify(exec);
 
@@ -25,6 +26,7 @@ function initialState(defaultDirectory) {
     queue: Promise.resolve(),
     permissions: new Map(),
     followGeneration: 0,
+    terminal: null,
   };
 }
 
@@ -191,6 +193,7 @@ export function createCommandHandler({
   defaultDirectory = process.cwd(),
   log = () => {},
   execCommand = run,
+  createTerminal = realCreateTerminal,
 }) {
   const states = new Map();
 
@@ -238,6 +241,41 @@ export function createCommandHandler({
     states.set(key, state);
     const pageId = String(event?.pageId ?? '');
     const reply = (message) => send(message, event);
+
+    // Full terminal mode: every subsequent message is a command until /exit or `exit`.
+    if (state.terminal) {
+      if (/^\/exit$/i.test(text)) {
+        state.terminal.kill();
+        state.terminal = null;
+        return reply('terminal closed');
+      }
+      if (/^(exit|logout)\s*$/i.test(text)) {
+        state.terminal.send('exit');
+        return undefined; // onExit replies and clears the mode.
+      }
+      try {
+        await state.terminal.run(text);
+        if (/^\s*cd\b/i.test(text)) return reply(`cwd: ${state.terminal?.cwd}`);
+      } catch (err) {
+        return reply(`terminal error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return undefined;
+    }
+
+    if (/^\/bash$/i.test(text)) {
+      if (state.terminal) return reply('terminal already open');
+      state.terminal = createTerminal({
+        cwd: '/home',
+        onOutput: (text) => reply(text),
+        onExit: (code) => {
+          if (!state.terminal) return;
+          state.terminal = null;
+          state.followGeneration += 1;
+          reply(`terminal exited (code ${code})`);
+        },
+      });
+      return reply('terminal opened at /home. Send shell commands; /exit or `exit` closes it.');
+    }
 
     try {
       // Shell escape hatch

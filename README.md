@@ -10,6 +10,7 @@ Messenger reply.
 ## Features
 
 - **Shell escape hatch:** any message starting with `!` runs locally (`!ls`, `!cd /tmp`, …) and the output is sent back.
+- **Stateful terminal:** `/bash` opens a persistent shell at `/home`; later messages are commands, state (cwd/exports) persists, and continuous output is streamed.
 - **Session control:** list, attach, create and detach OpenCode sessions from Messenger.
 - **Model control:** list connected models and switch the attached session's model.
 - **Prompt streaming:** each completed OpenCode thinking step is relayed in a compact pattern, then the final answer is sent.
@@ -142,6 +143,7 @@ Health check: `curl http://localhost:8788/health`
 
 | Message | Action |
 |---|---|
+| `/bash` | Open a stateful terminal at `/home` (see below) |
 | `!ls`, `!pwd`, `!cd /tmp` | Run a shell command; output is sent back. `!cd` changes the working directory for later `!` commands. |
 | `/session` | List OpenCode sessions with numbers |
 | `/session 2` | Attach to session 2; checks whether it is busy, replies with confirmation/model/history and either “no operation currently running” or a live report of the running turn |
@@ -153,6 +155,17 @@ Health check: `curl http://localhost:8788/health`
 | `/model pwd` | Show the active model and attached session |
 | `/allow <id>` / `/always <id>` / `/reject <id>` | Answer a forwarded OpenCode permission request |
 | anything else | Prompt for the attached session; if none is attached, you get the session list |
+
+### Terminal mode (`/bash`)
+
+`/bash` spawns one persistent bash process for that Messenger user, starting at `/home`:
+
+- `cd /sbin` changes the directory; the next `pwd`/`ls` runs in `/sbin`. Shell state (exports, etc.) survives too.
+- Output is forwarded **as it is produced**, so `tail -f`, a server, or a long loop keeps reporting line by line.
+- `exit` typed in the terminal or `/exit` from Messenger closes it; the bot replies `terminal exited (code 0)` or `terminal closed`.
+- After closing, normal behavior resumes: attached sessions receive prompts, otherwise you get the session list.
+
+`!` commands remain one-off commands that do not open terminal mode.
 
 ### Output behavior
 

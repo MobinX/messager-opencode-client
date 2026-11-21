@@ -242,6 +242,84 @@ test('thinking relay sends 1st full, skips 2, sends compact 4th, then full 5th',
   ]);
 });
 
+test('/bash opens a stateful terminal, streams output and /exit closes it', async () => {
+  const replies = [];
+  const commands = [];
+  let killed = false;
+  let options;
+
+  const terminal = {
+    cwd: '/home',
+    alive: true,
+    run: async (command) => {
+      commands.push(command);
+      if (command.startsWith('cd ')) terminal.cwd = command.slice(3).trim();
+    },
+    send: () => {},
+    kill: () => { killed = true; },
+  };
+  const { client } = makeClient();
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+    createTerminal: (opts) => { options = opts; return terminal; },
+  });
+  const incoming = (text) =>
+    handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text } });
+
+  await incoming('/bash');
+  assert.equal(options.cwd, '/home');
+  assert.match(replies.at(-1), /terminal opened at \/home/);
+
+  await incoming('cd /sbin');
+  assert.deepEqual(commands, ['cd /sbin']);
+  assert.equal(terminal.cwd, '/sbin');
+  assert.equal(replies.at(-1), 'cwd: /sbin');
+
+  options.onOutput('first log line\n');
+  assert.equal(replies.at(-1), 'first log line\n');
+  options.onOutput('still running...\n');
+  assert.equal(replies.at(-1), 'still running...\n');
+
+  await incoming('ls');
+  assert.deepEqual(commands, ['cd /sbin', 'ls']);
+
+  await incoming('/exit');
+  assert.equal(killed, true);
+  assert.equal(replies.at(-1), 'terminal closed');
+
+  replies.length = 0;
+  await incoming('hello');
+  assert.match(replies.at(-1), /No session currently attached/);
+});
+
+test('typing exit inside the terminal closes terminal mode', async () => {
+  const replies = [];
+  let options;
+  const terminal = {
+    cwd: '/home',
+    alive: true,
+    run: async () => {},
+    send: () => options.onExit(0),
+    kill: () => {},
+  };
+  const { client } = makeClient();
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+    createTerminal: (opts) => { options = opts; return terminal; },
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/bash' } });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'exit' } });
+  assert.match(replies.at(-1), /terminal exited \(code 0\)/);
+
+  replies.length = 0;
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'pwd' } });
+  assert.match(replies.at(-1), /No session currently attached/);
+});
+
 test('!command runs directly and returns its output', async () => {
   const { replies, incoming } = setup();
   await incoming('!ls -la');
