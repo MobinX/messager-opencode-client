@@ -55,7 +55,14 @@ export function createHttpServer({
             return Promise.resolve();
           }
           log('reply', { to: recipientId, text: String(text).slice(0, 120) });
-          return sendMessage(serviceId, targetPage, recipientId, text);
+          // A failed Messenger send must never take down the webhook receiver.
+          return sendMessage(serviceId, targetPage, recipientId, text).catch((err) => {
+            log('reply-error', {
+              to: recipientId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            console.error('[reply] OnlyOrders send failed:', err instanceof Error ? err.message : err);
+          });
         },
         log,
       })
