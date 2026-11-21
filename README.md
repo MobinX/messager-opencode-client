@@ -47,7 +47,7 @@ The server does **not** talk to Facebook directly. Sending text uses OnlyOrders'
 - **`cloudflared`** installed and on `PATH` (Cloudflare quick tunnels)
 - **`opencode` CLI v2** installed and on `PATH` (the client connects to its background service)
 - An OnlyOrders external service with a connected Facebook Page (created by `msgctrl init`)
-- **Passwordless `sudo`** for full one-shot setup (the CLI never prompts for a password)
+- Optionally **passwordless `sudo`** for full one-shot setup and cloudflared installation (the CLI never prompts for a password)
 
 On this machine the working toolchain is:
 
@@ -91,7 +91,7 @@ msgctrl init
 
 Interactive flow:
 
-1. Confirms `cloudflared` and `opencode` are present.
+1. Checks `opencode` (version + path) and `cloudflared` (version + path). If either is missing it asks whether to install it; if OpenCode is older than v2 it asks whether to upgrade. Installers use the [official OpenCode v2 install script](https://opencode.ai/v2/install) and the [official cloudflared release binary](https://developers.cloudflare.com/tunnel/downloads/), then put them on `PATH` (systemd units set their own `PATH` explicitly). Declining leaves the tool untouched and aborts with a clear error.
 2. Asks for a **service name**.
 3. Starts a Cloudflare quick tunnel and waits for its public URL.
 4. Calls `/create` on OnlyOrders to create the external service.
@@ -244,11 +244,11 @@ export PATH="$HOME/.nvm/versions/node/v24.22.1/bin:$HOME/.opencode/bin:$PATH"
 npm test
 ```
 
-28 tests cover command routing, history sorting, thinking relay, error forwarding, permission
+30 tests cover command routing, history sorting, thinking relay, error forwarding, permission
 handling, config persistence, tunnel parsing (including watching a service log across restarts),
-systemd unit generation, service detection, the stateful terminal (buffering + streaming),
-busy-session attach reporting, the callback receiver, and the full injected init flow. No live
-Messenger or OnlyOrders account is needed.
+systemd unit generation, service detection, dependency version/install checks, the stateful
+terminal (buffering + streaming), busy-session attach reporting, the callback receiver, and the
+full injected init flow. No live Messenger or OnlyOrders account is needed.
 
 ## Troubleshooting
 

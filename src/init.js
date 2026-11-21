@@ -9,6 +9,7 @@ import { homeDir, loadDb, saveDb, saveState, logState } from './config.js';
 import { createHttpServer } from './server.js';
 import { connect, isOpencodeAvailable } from './opencode.js';
 import { detectServices, activeSystemdUnit } from './services.js';
+import * as defaultInstaller from './installer.js';
 
 const PORT = Number(process.env.PORT ?? 8788);
 
@@ -46,6 +47,7 @@ export async function runInit({
   system = systemd,
   opencode = { isOpencodeAvailable, connect },
   services = { detectServices, activeSystemdUnit },
+  installer = defaultInstaller,
   port = PORT,
   waitTimeoutMs = 5 * 60 * 1000,
 } = {}) {
@@ -54,10 +56,51 @@ export async function runInit({
   if (!ask) throw new Error('io.ask is required');
 
   print('=== msgctrl init ===');
-  const info = services.detectServices?.() ?? null;
-  print(`cloudflared binary: ${info?.binaries?.cloudflared ?? (tunnel.isInstalled() ? 'found' : 'MISSING')}`);
-  print(`opencode binary:    ${info?.binaries?.opencode ?? 'unknown'}`);
-  print(`opencode runtime:   ${info?.runtime?.opencode?.url ?? (opencode.isOpencodeAvailable() ? 'available' : 'MISSING')}`);
+
+  const confirm = async (question) => {
+    const answer = (await ask(question)).trim().toLowerCase();
+    return answer === '' || answer.startsWith('y');
+  };
+  const detect = () => services.detectServices?.() ?? null;
+  const statusOf = async (name) =>
+    installer.toolStatus(name, detect()?.binaries?.[name]);
+
+  let info = detect();
+  let oc = await statusOf('opencode');
+  print(`opencode: ${oc.found ? `${oc.version ?? 'unknown version'} (${oc.path})` : 'MISSING'}`);
+  if (!oc.found) {
+    if (await confirm('OpenCode is missing. Install OpenCode v2 now? [Y/n] ')) {
+      const result = await installer.installOpencode();
+      print(`[install] opencode: ${result.ok ? 'ok' : `failed (${result.error ?? 'unknown'})`}`);
+      if (result.ok) {
+        installer.ensureShellPath?.(path.dirname(
+          detect()?.binaries?.opencode ?? path.join(process.env.HOME ?? '/root', '.opencode/bin'),
+        ));
+      }
+    }
+  } else if (!installer.isOpencodeV2(oc)) {
+    print(`[warn] OpenCode ${oc.version} is not v2.`);
+    if (await confirm('Upgrade OpenCode to v2 now? [Y/n] ')) {
+      const result = await installer.upgradeOpencode();
+      print(`[upgrade] opencode: ${result.ok ? 'ok' : `failed (${result.error ?? 'unknown'})`}`);
+    }
+  }
+
+  let cf = await statusOf('cloudflared');
+  print(`cloudflared: ${cf.found ? `${cf.version ?? 'unknown version'} (${cf.path})` : 'MISSING'}`);
+  if (!cf.found) {
+    if (await confirm('cloudflared is missing. Install it now? [Y/n] ')) {
+      const result = await installer.installCloudflared({
+        sudoAvailable: system.sudoAvailable?.() ?? true,
+      });
+      print(`[install] cloudflared: ${result.ok ? 'ok' : `failed (${result.error ?? 'unknown'})`}`);
+    }
+  }
+
+  info = detect();
+  oc = await statusOf('opencode');
+  cf = await statusOf('cloudflared');
+  print(`opencode runtime: ${info?.runtime?.opencode?.url ?? 'not running'}`);
   if (info) {
     const fmt = (units) => {
       const active = services.activeSystemdUnit?.(units);
@@ -71,13 +114,10 @@ export async function runInit({
     if (!services.activeSystemdUnit?.(info.systemd.opencode) && info.runtime?.opencode?.url) {
       print('[warn] OpenCode is reachable but not via a systemd unit — it may stop on reboot.');
     }
-    if (!services.activeSystemdUnit?.(info.systemd.cloudflared)) {
-      print('[info] No system cloudflared unit is active; msgctrl starts its own quick tunnel at start.');
-    }
   }
-  if (!tunnel.isInstalled() || !opencode.isOpencodeAvailable()) {
-    throw new Error('cloudflared and opencode are both required');
-  }
+  if (!oc.found) throw new Error('OpenCode v2 is required but could not be installed');
+  if (!installer.isOpencodeV2(oc)) throw new Error('OpenCode v2 is required; upgrade failed');
+  if (!cf.found) throw new Error('cloudflared is required but could not be installed');
 
   const db = loadDb();
   const serviceName = (await ask(`Service name [${db.serviceName ?? 'Messenger OpenCode Client'}]: `)).trim()

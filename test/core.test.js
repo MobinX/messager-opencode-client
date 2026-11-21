@@ -18,6 +18,7 @@ const {
 const { findBinary, activeSystemdUnit, detectServices } = await import('../src/services.js');
 const { runInit } = await import('../src/init.js');
 const { createTerminal } = await import('../src/terminal.js');
+const installerLib = await import('../src/installer.js');
 const { createHttpServer } = await import('../src/server.js');
 
 function freePort() {
@@ -163,6 +164,72 @@ test('terminal buffers fast output into one message but streams long-running out
   assert.equal(chunks[0], 'slow1\n');
   assert.match(chunks.join(''), /slow2/);
   terminal.kill();
+});
+
+test('installer parses versions and reports v2 correctly', () => {
+  assert.equal(installerLib.parseVersion('opencode v2.2.0'), '2.2.0');
+  assert.equal(installerLib.majorVersion('2026.10.7'), 2026);
+  const v2 = installerLib.toolStatus('opencode', '/bin/opencode', {
+    runner: () => ({ ok: true, stdout: 'opencode v2.2.0', stderr: '' }),
+  });
+  assert.equal(installerLib.isOpencodeV2(v2), true);
+  const v1 = installerLib.toolStatus('opencode', '/bin/opencode', {
+    runner: () => ({ ok: true, stdout: 'opencode v1.0.0', stderr: '' }),
+  });
+  assert.equal(installerLib.isOpencodeV2(v1), false);
+  const missing = installerLib.toolStatus('cloudflared', null);
+  assert.equal(missing.found, false);
+});
+
+test('init asks before installing a missing tool and honours a no answer', async () => {
+  const printed = [];
+  let asked = null;
+  let installed = false;
+  const fakeInfo = {
+    binaries: { opencode: '/bin/opencode', cloudflared: null },
+    runtime: { opencode: { url: 'http://127.0.0.1:4096' } },
+    systemd: {
+      availableSystem: true,
+      availableUser: false,
+      opencode: [],
+      cloudflared: [],
+      msgctrl: [],
+    },
+  };
+  const installer = {
+    toolStatus: (name, binary) => ({
+      name,
+      found: Boolean(binary),
+      version: name === 'opencode' ? '2.2.0' : null,
+      path: binary,
+    }),
+    isOpencodeV2: (status) => status.version === '2.2.0',
+    installCloudflared: async () => { installed = true; return { ok: true }; },
+    upgradeOpencode: async () => ({ ok: true }),
+  };
+  const io = {
+    print: (m) => printed.push(m),
+    ask: async (question) => { asked = question; return 'n'; },
+    close: () => {},
+  };
+
+  await assert.rejects(
+    runInit({
+      io,
+      installer,
+      services: {
+        detectServices: () => fakeInfo,
+        activeSystemdUnit: () => null,
+      },
+      tunnel: { isInstalled: () => false, startTunnel: () => ({ ready: Promise.resolve('https://x') }) },
+      system: { sudoAvailable: () => true },
+      opencode: { isOpencodeAvailable: () => true, connect: async () => ({ endpoint: {} }) },
+    }),
+    /cloudflared is required/,
+  );
+  assert.match(asked, /Install it now/);
+  assert.equal(installed, false);
+  assert.match(printed.join('\n'), /cloudflared: MISSING/);
 });
 
 test('init flow creates service, webhook, connects chosen page and stores ids', async () => {
