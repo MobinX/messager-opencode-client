@@ -47,6 +47,7 @@ The server does **not** talk to Facebook directly. Sending text uses OnlyOrders'
 - **`cloudflared`** installed and on `PATH` (Cloudflare quick tunnels)
 - **`opencode` CLI v2** installed and on `PATH` (the client connects to its background service)
 - An OnlyOrders external service with a connected Facebook Page (created by `msgctrl init`)
+- **Passwordless `sudo`** for full one-shot setup (the CLI never prompts for a password)
 
 On this machine the working toolchain is:
 
@@ -99,9 +100,26 @@ Interactive flow:
 7. **You open that URL in a browser and select Page(s).** OnlyOrders posts the selection to the tunnel; the local receiver stores it.
 8. The CLI prints the selected Pages with numbers and asks which one becomes the control panel.
 9. Choosing a number calls `/connectChannel` for that Page (this subscribes the Page's webhook, so OnlyOrders starts forwarding its messages) and stores `pageId`.
-10. Opens an OpenCode connection and writes `~/.config/systemd/user/msgctrl.service`.
+10. Uses `sudo -n` to install, enable and **start** three systemd units (see below). If passwordless sudo is unavailable, it falls back to writing a user unit and prints the manual commands.
 
 Nothing is sent to your external redirect except the Page **name** and **id** — no tokens.
+
+### System services installed by `init`
+
+With passwordless sudo, `init` installs and enables these system units immediately:
+
+| Unit | Purpose |
+|---|---|
+| `opencode-server.service` | OpenCode server. Reused if already active; otherwise created from the discovered CLI/endpoint. |
+| `msgctrl-tunnel.service` | Dedicated `cloudflared` quick tunnel to local port 8788. Appends its output to `msgctrl-tunnel.log`. |
+| `msgctrl.service` | Runs `msgctrl start`, reads the tunnel URL from the log, PUTs the webhook, and serves Messenger traffic. |
+
+All three are `enabled` (start at boot) and `Restart=always`. `msgctrl.service` runs with
+`MSGCTRL_EXTERNAL_TUNNEL=1`, so it does **not** spawn its own cloudflared child — it watches the
+tunnel unit's log. When the quick-tunnel URL changes after a restart, the newest URL is detected and
+the OnlyOrders webhook is re-pointed using the stored webhook id.
+
+Without sudo, `init` falls back to a user unit and prints the manual `systemctl` commands.
 
 ## Running
 
@@ -112,10 +130,12 @@ msgctrl install   # (re)write the systemd user unit
 msgctrl uninstall # remove it
 ```
 
-Enable at boot:
+`msgctrl init` already enables and starts the units. If sudo was unavailable, enable manually:
 
 ```sh
 systemctl --user enable --now msgctrl
+# or, after `sudo msgctrl install --system`:
+sudo systemctl enable --now msgctrl msgctrl-tunnel.service
 ```
 
 Health check: `curl http://localhost:8788/health`
@@ -224,10 +244,11 @@ export PATH="$HOME/.nvm/versions/node/v24.22.1/bin:$HOME/.opencode/bin:$PATH"
 npm test
 ```
 
-26 tests cover command routing, history sorting, thinking relay, error forwarding, permission
-handling, config persistence, tunnel parsing, systemd unit generation, service detection, the
-stateful terminal (buffering + streaming), busy-session attach reporting, the callback receiver,
-and the full injected init flow. No live Messenger or OnlyOrders account is needed.
+28 tests cover command routing, history sorting, thinking relay, error forwarding, permission
+handling, config persistence, tunnel parsing (including watching a service log across restarts),
+systemd unit generation, service detection, the stateful terminal (buffering + streaming),
+busy-session attach reporting, the callback receiver, and the full injected init flow. No live
+Messenger or OnlyOrders account is needed.
 
 ## Troubleshooting
 

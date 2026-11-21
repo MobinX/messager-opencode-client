@@ -112,6 +112,8 @@ export function detectServices() {
         systemdUnit('msgctrl.service', 'system'),
         systemdUnit('msgctrl.service', 'user'),
       ],
+      msgctrlTunnel: [systemdUnit('msgctrl-tunnel.service', 'system')],
+      msgctrlOpencode: [systemdUnit('msgctrl-opencode.service', 'system')],
     },
     runtime: {
       opencode: opencodeRuntime(opencodeBin),

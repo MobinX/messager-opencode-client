@@ -1,10 +1,11 @@
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import * as onlyorders from './onlyorders.js';
 import { startTunnel, isInstalled as tunnelInstalled } from './tunnel.js';
 import * as systemd from './systemd.js';
-import { loadDb, saveDb, saveState, logState } from './config.js';
+import { homeDir, loadDb, saveDb, saveState, logState } from './config.js';
 import { createHttpServer } from './server.js';
 import { connect, isOpencodeAvailable } from './opencode.js';
 import { detectServices, activeSystemdUnit } from './services.js';
@@ -163,24 +164,61 @@ export async function runInit({
     const { endpoint } = await opencode.connect();
     print(`[opencode] connected: ${endpoint.url}`);
 
-    const installed = system.installUnit({
-      user: process.env.USER ?? 'ubuntu',
-      workdir: process.cwd(),
-      nodeBin: process.execPath,
-      port,
-    });
-    print(`[systemd] unit written: ${installed.path}`);
-    if (!installed.reloaded) print('[systemd] daemon-reload failed — enable manually if needed');
+    // Free the port before systemd starts the real receiver, then install/enable everything.
+    callbackServer.close();
+    activeTunnel.stop();
 
-    saveState({ initialized: true, initializedAt: new Date().toISOString() });
-    print('\nInit complete. Start the service with:');
-    print('  msgctrl start');
+    const tunnelLogPath = path.join(homeDir(), 'msgctrl-tunnel.log');
+    const info = services.detectServices?.() ?? null;
+    const boot = system.bootstrapSystemServices
+      ? await system.bootstrapSystemServices({
+          user: process.env.USER ?? 'ubuntu',
+          workdir: process.cwd(),
+          nodeBin: process.execPath,
+          port,
+          defaultDirectory: process.env.DEFAULT_DIRECTORY ?? process.cwd(),
+          tunnelLogPath,
+          opencodeBinary: info?.binaries?.opencode,
+          cloudflaredBinary: info?.binaries?.cloudflared,
+          runtimeUrl: info?.runtime?.opencode?.url,
+        })
+      : {
+          sudo: false,
+          fallback: system.installUnit({
+            user: process.env.USER ?? 'ubuntu',
+            workdir: process.cwd(),
+            nodeBin: process.execPath,
+            port,
+          }),
+        };
+
+    saveDb({
+      externalTunnel: boot.sudo === true,
+      tunnelLogPath,
+    });
+    saveState({
+      initialized: true,
+      initializedAt: new Date().toISOString(),
+      systemd: boot,
+    });
+
+    print(`[systemd] sudo: ${boot.sudo ? 'yes' : 'no'}`);
+    for (const [name, result] of Object.entries(boot)) {
+      if (name === 'sudo' || name === 'fallback' || !result) continue;
+      print(`[systemd] ${name}: ${result.ok ? 'ok' : `failed (${result.error ?? 'unknown'})`}`);
+    }
+    if (!boot.sudo) {
+      print('[systemd] no passwordless sudo — install/enable manually with: msgctrl install --system');
+    }
+
+    print('\nInit complete. Everything is installed and started.');
+    print('  msgctrl status   — inspect state');
     return {
       serviceId: service.id,
       webhookId: hook.id,
       tunnelUrl,
       pageId: chosen.pageId,
-      systemdUnit: installed.path,
+      systemd: boot,
     };
   } finally {
     callbackServer.close();

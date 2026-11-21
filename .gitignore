@@ -6,4 +6,5 @@ node_modules/
 db.json
 state.json
 msgctrl.log
+msgctrl-tunnel.log
 *.service

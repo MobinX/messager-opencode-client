@@ -67,6 +67,7 @@ async function main() {
       console.log(`opencode systemd:  ${fmt(info.systemd.opencode)}`);
       console.log(`cloudflared systemd: ${fmt(info.systemd.cloudflared)}`);
       console.log(`msgctrl systemd:   ${fmt(info.systemd.msgctrl)}`);
+      console.log(`tunnel systemd:    ${fmt(info.systemd.msgctrlTunnel)}`);
       break;
     }
     case 'install': {

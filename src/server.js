@@ -1,4 +1,5 @@
 import http from 'node:http';
+import path from 'node:path';
 import { createCommandHandler } from './commands.js';
 import { connect } from './opencode.js';
 import {
@@ -6,8 +7,8 @@ import {
   sendMessage,
   updateWebhook,
 } from './onlyorders.js';
-import { startTunnel } from './tunnel.js';
-import { loadDb, loadState, logState, saveDb, saveState } from './config.js';
+import { startTunnel, watchTunnelUrl } from './tunnel.js';
+import { homeDir, loadDb, loadState, logState, saveDb, saveState } from './config.js';
 
 const PORT = Number(process.env.PORT ?? 8788);
 const DEFAULT_DIRECTORY = process.env.DEFAULT_DIRECTORY ?? process.cwd();
@@ -153,7 +154,9 @@ export async function startRuntime({ port = PORT, logger = console } = {}) {
   const { client, endpoint } = await connect();
   logger.log(`[opencode] connected to ${endpoint.url}`);
 
+  let activeServer = null;
   const onWebhookSync = async (baseUrl) => {
+    activeServer?.setPublicUrl(baseUrl);
     const url = `${baseUrl.replace(/\/+$/, '')}/webhook`;
     const current = loadDb();
     const hook = current.webhookId
@@ -184,24 +187,45 @@ export async function startRuntime({ port = PORT, logger = console } = {}) {
   });
   logger.log(`[server] listening on http://0.0.0.0:${port}/webhook`);
 
-  const tunnel = startTunnel({
-    localPort: port,
-    logger,
-    onUrl: onWebhookSync,
-    onLog: (text) => {
-      if (text.includes('ERR') || text.includes('error')) logState('tunnel', text.slice(0, 500));
-    },
-  });
+  const externalTunnel =
+    process.env.MSGCTRL_EXTERNAL_TUNNEL === '1' || db.externalTunnel === true;
+  let tunnel;
   let tunnelUrl;
-  try {
-    tunnelUrl = await tunnel.ready;
-  } catch (err) {
-    tunnel.stop();
-    server.close();
-    throw err;
+
+  if (externalTunnel) {
+    // The tunnel runs as its own systemd unit; watch its log for URL changes.
+    const logPath =
+      process.env.MSGCTRL_TUNNEL_LOG ?? db.tunnelLogPath ?? path.join(homeDir(), 'msgctrl-tunnel.log');
+    tunnel = watchTunnelUrl({ file: logPath, onUrl: onWebhookSync, logger });
+    const deadline = Date.now() + 15_000;
+    while (!tunnel.url && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    tunnelUrl = tunnel.url;
+    if (!tunnelUrl) {
+      logger.warn('[tunnel] no URL in service log yet — will sync when it appears');
+      logState('tunnel', 'waiting for msgctrl-tunnel.service URL');
+    }
+  } else {
+    tunnel = startTunnel({
+      localPort: port,
+      logger,
+      onUrl: onWebhookSync,
+      onLog: (text) => {
+        if (text.includes('ERR') || text.includes('error')) logState('tunnel', text.slice(0, 500));
+      },
+    });
+    try {
+      tunnelUrl = await tunnel.ready;
+    } catch (err) {
+      tunnel.stop();
+      server.close();
+      throw err;
+    }
   }
+
   server.setPublicUrl(tunnelUrl);
-  logState('start', `service started on port ${port} with tunnel ${tunnelUrl}`);
+  logState('start', `service started on port ${port} with tunnel ${tunnelUrl ?? 'pending'}`);
 
   return {
     server,

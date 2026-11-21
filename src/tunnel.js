@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 
 const URL_RE = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/g;
@@ -14,6 +15,45 @@ export function isInstalled(command = 'cloudflared') {
   } catch {
     return false;
   }
+}
+
+/**
+ * Watches the log written by the systemd cloudflared unit and reports each new quick-tunnel URL.
+ * This lets the tunnel run as a separate service while msgctrl still re-points the OnlyOrders
+ * webhook whenever the URL changes (including after a reboot).
+ */
+export function watchTunnelUrl({ file, onUrl = () => {}, intervalMs = 2000, logger = console } = {}) {
+  let stopped = false;
+  let last = null;
+
+  const check = () => {
+    if (stopped) return;
+    try {
+      const content = fs.readFileSync(file, 'utf8');
+      // The unit appends to this log across restarts; the newest URL is the last one in the file.
+      const urls = String(content).match(URL_RE);
+      const url = urls ? urls[urls.length - 1] : null;
+      if (url && url !== last) {
+        last = url;
+        logger.log(`[tunnel] public URL from service: ${url}`);
+        Promise.resolve(onUrl(url)).catch((err) => logger.error('[tunnel] onUrl failed', err));
+      }
+    } catch {
+      // The service may not have written the log yet.
+    }
+  };
+
+  check();
+  const timer = setInterval(check, intervalMs);
+  timer.unref?.();
+
+  return {
+    get url() { return last; },
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
 }
 
 /**

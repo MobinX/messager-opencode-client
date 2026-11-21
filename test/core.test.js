@@ -9,8 +9,12 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'msgctrl-test-'));
 process.env.MSGCTRL_HOME = tmp;
 
 const { loadDb, saveDb, loadState, saveState, logState, dbPath, statePath } = await import('../src/config.js');
-const { extractTunnelUrl } = await import('../src/tunnel.js');
-const { unitContent } = await import('../src/systemd.js');
+const { extractTunnelUrl, watchTunnelUrl } = await import('../src/tunnel.js');
+const {
+  msgctrlUnitContent,
+  opencodeUnitContent,
+  tunnelUnitContent,
+} = await import('../src/systemd.js');
 const { findBinary, activeSystemdUnit, detectServices } = await import('../src/services.js');
 const { runInit } = await import('../src/init.js');
 const { createTerminal } = await import('../src/terminal.js');
@@ -45,11 +49,65 @@ test('extractTunnelUrl finds the quick tunnel URL', () => {
 });
 
 test('systemd unit contains restart and executable path', () => {
-  const unit = unitContent({ user: 'ubuntu', workdir: '/home/ubuntu/app', nodeBin: '/usr/bin/node', port: 9999 });
+  const unit = msgctrlUnitContent({ user: 'ubuntu', workdir: '/home/ubuntu/app', nodeBin: '/usr/bin/node', port: 9999 });
   assert.match(unit, /\[Service\]/);
   assert.match(unit, /Restart=always/);
   assert.match(unit, /Environment=PORT=9999/);
   assert.match(unit, /\/usr\/bin\/node \/home\/ubuntu\/app\/bin\/msgctrl start/);
+});
+
+test('systemd units wire OpenCode, tunnel and msgctrl services together', () => {
+  const msgctrl = msgctrlUnitContent({
+    user: 'ubuntu',
+    workdir: '/home/ubuntu/messager_opencode_client',
+    nodeBin: '/usr/bin/node',
+    port: 8788,
+    tunnelLogPath: '/tmp/tunnel.log',
+  });
+  assert.match(msgctrl, /Wants=network-online.target msgctrl-tunnel.service/);
+  assert.match(msgctrl, /Environment=MSGCTRL_EXTERNAL_TUNNEL=1/);
+  assert.match(msgctrl, /Environment=MSGCTRL_TUNNEL_LOG=\/tmp\/tunnel.log/);
+  assert.match(msgctrl, /WantedBy=multi-user.target/);
+
+  const opencode = opencodeUnitContent({
+    user: 'ubuntu',
+    binary: '/home/ubuntu/.opencode/bin/opencode',
+    port: 4096,
+  });
+  assert.match(opencode, /serve --hostname 127.0.0.1 --port 4096/);
+  assert.match(opencode, /Restart=always/);
+
+  const tunnel = tunnelUnitContent({
+    user: 'ubuntu',
+    binary: '/usr/local/bin/cloudflared',
+    port: 8788,
+    logPath: '/tmp/tunnel.log',
+  });
+  assert.match(tunnel, /cloudflared tunnel --no-autoupdate --url http:\/\/127.0.0.1:8788/);
+  assert.match(tunnel, /tee -a \/tmp\/tunnel.log/);
+});
+
+test('watchTunnelUrl reports new URLs written by the tunnel service', async () => {
+  const logPath = path.join(tmp, 'tunnel-service.log');
+  fs.writeFileSync(logPath, 'starting...\n');
+  const seen = [];
+  const watcher = watchTunnelUrl({
+    file: logPath,
+    intervalMs: 20,
+    onUrl: (url) => seen.push(url),
+    logger: { log() {}, error() {} },
+  });
+  fs.appendFileSync(logPath, '| https://new-tunnel-1.trycloudflare.com |\n');
+  await new Promise((r) => setTimeout(r, 60));
+  assert.deepEqual(seen, ['https://new-tunnel-1.trycloudflare.com']);
+  // A restart appends a second URL; the watcher must pick the newest one, not the first.
+  fs.appendFileSync(logPath, '| https://new-tunnel-2.trycloudflare.com |\n');
+  await new Promise((r) => setTimeout(r, 60));
+  assert.deepEqual(seen, [
+    'https://new-tunnel-1.trycloudflare.com',
+    'https://new-tunnel-2.trycloudflare.com',
+  ]);
+  watcher.stop();
 });
 
 test('service detection locates binaries and reports systemd state without throwing', () => {
