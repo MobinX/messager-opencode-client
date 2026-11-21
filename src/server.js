@@ -224,6 +224,7 @@ export async function startRuntime({ port = PORT, logger = console } = {}) {
     }
   }
 
+  activeServer = server;
   server.setPublicUrl(tunnelUrl);
   logState('start', `service started on port ${port} with tunnel ${tunnelUrl ?? 'pending'}`);
 
