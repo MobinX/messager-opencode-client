@@ -162,16 +162,7 @@ export async function startRuntime({ port = PORT, logger = console } = {}) {
     logger.log(`[onlyorders] webhook synced: ${hook.url}`);
   };
 
-  const tunnel = startTunnel({
-    localPort: port,
-    logger,
-    onUrl: onWebhookSync,
-    onLog: (text) => {
-      if (text.includes('ERR') || text.includes('error')) logState('tunnel', text.slice(0, 500));
-    },
-  });
-  const tunnelUrl = await tunnel.ready;
-
+  // Bind the HTTP receiver first so a port conflict fails fast and never leaves an orphan tunnel.
   const server = createHttpServer({
     serviceId,
     pageId: db.pageId ?? null,
@@ -180,10 +171,30 @@ export async function startRuntime({ port = PORT, logger = console } = {}) {
     defaultDirectory: db.defaultDirectory ?? DEFAULT_DIRECTORY,
     log: (kind, detail) => logState(kind, JSON.stringify(detail)),
   });
-  server.setPublicUrl(tunnelUrl);
-  await new Promise((resolve) => server.listen(port, '0.0.0.0', resolve));
-  logState('start', `service started on port ${port} with tunnel ${tunnelUrl}`);
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '0.0.0.0', resolve);
+  });
   logger.log(`[server] listening on http://0.0.0.0:${port}/webhook`);
+
+  const tunnel = startTunnel({
+    localPort: port,
+    logger,
+    onUrl: onWebhookSync,
+    onLog: (text) => {
+      if (text.includes('ERR') || text.includes('error')) logState('tunnel', text.slice(0, 500));
+    },
+  });
+  let tunnelUrl;
+  try {
+    tunnelUrl = await tunnel.ready;
+  } catch (err) {
+    tunnel.stop();
+    server.close();
+    throw err;
+  }
+  server.setPublicUrl(tunnelUrl);
+  logState('start', `service started on port ${port} with tunnel ${tunnelUrl}`);
 
   return {
     server,

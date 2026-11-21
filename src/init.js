@@ -132,6 +132,7 @@ export async function runInit({
       channelId: connected.id,
       pageConnectedAt: new Date().toISOString(),
       defaultDirectory: process.env.DEFAULT_DIRECTORY ?? process.cwd(),
+      defaultModel: process.env.OPENCODE_MODEL ?? 'opencode/hy4-flash-free',
     });
     saveState({ selectedPages: pages, activePageId: chosen.pageId });
     logState('page', `connected ${chosen.pageName} (${chosen.pageId})`);

@@ -25,6 +25,7 @@ WorkingDirectory=${workdir}
 Environment=PATH=${detectedPath(nodeBin)}
 Environment=PORT=${port}
 Environment=DEFAULT_DIRECTORY=${defaultDirectory}
+Environment=OPENCODE_MODEL=${process.env.OPENCODE_MODEL ?? 'opencode/hy4-flash-free'}
 ExecStart=${nodeBin} ${path.join(workdir, 'bin', 'msgctrl')} start
 Restart=always
 RestartSec=5

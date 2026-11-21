@@ -47,6 +47,7 @@ async function main() {
       await runInit();
       break;
     case 'start':
+      process.env.OPENCODE_MODEL ||= loadDb().defaultModel || 'opencode/hy4-flash-free';
       await startRuntime();
       break;
     case 'status':
