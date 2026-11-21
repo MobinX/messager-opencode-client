@@ -88,22 +88,39 @@ export async function switchModel(client, sessionID, model) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** True when OpenCode reports a turn currently executing in this session. */
+export async function isSessionActive(client, sessionID) {
+  try {
+    const active = await client.session.active();
+    if (active?.[sessionID]) return true;
+  } catch {
+    // Older servers may not expose /session/active; fall back to session timestamps.
+  }
+  try {
+    const session = await getSession(client, sessionID);
+    const busy = session?.time?.busy ?? 0;
+    const idle = session?.time?.idle ?? 0;
+    return Boolean(busy && busy > idle);
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Sends a prompt, streams each completed reasoning (thinking) step through `onThinking`, and
- * returns ONLY the assistant's final text.
- *
- * Tool-call chatter is intentionally not forwarded. Text deltas are grouped by assistantMessageID
- * so a streamed answer is returned once, in order.
+ * Shared live event stream. With `text` it sends a prompt first; without it, it only reports on
+ * work already running. Either way it forwards reasoning, errors, permissions and the final text,
+ * never replaying anything older than the moment the subscription started.
  */
-export async function promptAndWait(
+async function streamTurn({
   client,
   sessionID,
-  text,
+  text = null,
   onThinking = () => {},
   onError = () => {},
   onPermission = () => {},
   timeoutMs = 180_000,
-) {
+}) {
+  const sending = text !== null;
   const controller = new AbortController();
   const chunks = new Map();
   let done = false;
@@ -111,23 +128,16 @@ export async function promptAndWait(
   let markConnected;
   const connected = new Promise((resolve) => { markConnected = resolve; });
 
-  // One failure is often reported as a step failure and then an execution failure with the same
-  // message. Forward each distinct error once, but never swallow a different one.
   const emittedErrors = new Set();
   const errorSends = [];
   const emitError = (message, type) => {
-    const text = String(message ?? '').trim();
-    if (!text || emittedErrors.has(text)) return;
-    emittedErrors.add(text);
-    const label = type ? `error [${type}]: ${text}` : `error: ${text}`;
+    const value = String(message ?? '').trim();
+    if (!value || emittedErrors.has(value)) return;
+    emittedErrors.add(value);
+    const label = type ? `error [${type}]: ${value}` : `error: ${value}`;
     errorSends.push(Promise.resolve(onError(label)).catch((err) => {
       console.error('[opencode] failed to forward error', err);
     }));
-  };
-  const fail = (message, type) => {
-    emitError(message, type);
-    failed = message;
-    done = true;
   };
 
   const subscription = (async () => {
@@ -154,16 +164,13 @@ export async function promptAndWait(
         }
         const data = event.data ?? {};
         if (event.type === 'permission.asked' && data.sessionID === sessionID) {
-          const id = String(data.id ?? '');
-          const action = String(data.action ?? 'permission');
           const resources = Array.isArray(data.resources) ? data.resources.join(', ') : '';
-          const message = String(data.message ?? '').trim();
           onPermission({
-            id,
+            id: String(data.id ?? ''),
             sessionID,
-            action,
+            action: String(data.action ?? 'permission'),
             resources,
-            message,
+            message: String(data.message ?? '').trim(),
             raw: data,
           });
         } else if (
@@ -217,10 +224,8 @@ export async function promptAndWait(
 
   const startedAt = Date.now();
   try {
-    // The event stream is live-only. Wait for the server.connected marker before sending the
-    // prompt, otherwise the fast execution.failed / text events are missed entirely.
     await Promise.race([connected, new Promise((resolve) => setTimeout(resolve, 5000))]);
-    await client.session.prompt({ sessionID, text });
+    if (sending) await client.session.prompt({ sessionID, text });
 
     const deadline = Date.now() + timeoutMs;
     while (!done && Date.now() < deadline) await sleep(250);
@@ -230,7 +235,7 @@ export async function promptAndWait(
     }
   } catch (err) {
     failed = err instanceof Error ? err.message : String(err);
-    emitError(failed, 'prompt');
+    emitError(failed, sending ? 'prompt' : 'follow');
   } finally {
     controller.abort();
     await Promise.race([subscription.catch(() => {}), sleep(1000)]);
@@ -245,8 +250,8 @@ export async function promptAndWait(
 
   let replyText = Array.from(chunks.values()).join('\n').trim();
   if (!replyText) {
-    // Fallback: a streamed text delta can be missed on a busy event source. Read the newest
-    // assistant message created by this prompt directly from the session history.
+    // A reply may already have been partly streamed before this listener attached. Fetch the
+    // newest assistant message created since the listener started.
     try {
       const messages = await client.message.list({ sessionID, limit: 10, order: 'desc' });
       const assistant = (messages.data ?? []).find(
@@ -263,8 +268,30 @@ export async function promptAndWait(
           .trim();
       }
     } catch {
-      // The streamed text is the primary source; history is only a safety net.
+      // The live stream is the primary source; history is only a safety net.
     }
   }
   return replyText || '(OpenCode returned no text)';
+}
+
+/** Sends a new prompt and waits for the final assistant text. */
+export function promptAndWait(
+  client,
+  sessionID,
+  text,
+  onThinking = () => {},
+  onError = () => {},
+  onPermission = () => {},
+  timeoutMs = 180_000,
+) {
+  return streamTurn({ client, sessionID, text, onThinking, onError, onPermission, timeoutMs });
+}
+
+/** Listens to work already running in a session, without sending a new prompt. */
+export function followSession(
+  client,
+  sessionID,
+  { onThinking = () => {}, onError = () => {}, onPermission = () => {}, timeoutMs = 180_000 } = {},
+) {
+  return streamTurn({ client, sessionID, onThinking, onError, onPermission, timeoutMs });
 }

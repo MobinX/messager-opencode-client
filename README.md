@@ -144,7 +144,7 @@ Health check: `curl http://localhost:8788/health`
 |---|---|
 | `!ls`, `!pwd`, `!cd /tmp` | Run a shell command; output is sent back. `!cd` changes the working directory for later `!` commands. |
 | `/session` | List OpenCode sessions with numbers |
-| `/session 2` | Attach to session 2; replies with confirmation, active model and last 3 turns |
+| `/session 2` | Attach to session 2; checks whether it is busy, replies with confirmation/model/history and either “no operation currently running” or a live report of the running turn |
 | `/session new /home/oryxa` | Create and attach a session in that directory |
 | `/session pwd` | Show active session title/id, directory and model |
 | `/exit` | Detach from the current session |
@@ -161,6 +161,7 @@ Health check: `curl http://localhost:8788/health`
 - **Errors:** forwarded as `error [type]: message`, deduplicated per message.
 - **Permissions:** forwarded with id/action/resources and reply instructions.
 - **History on attach:** last 3 turns, separated by `#############`, user messages + final assistant text only (no reasoning, no tool calls).
+- **Attaching to a busy session:** the bot checks `session.active` first. If idle, it says so. If a turn is running, it says “Operation running and reporting from now” and opens a **live** listener from that moment — no replay of earlier tokens. From then on it uses the same thinking relay and sends the final reply when the turn ends. A new prompt or `/exit` supersedes that listener.
 
 ## OnlyOrders API endpoints used
 

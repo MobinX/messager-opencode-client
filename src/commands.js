@@ -2,8 +2,10 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   createSession,
+  followSession,
   getSession,
   getSessionHistory,
+  isSessionActive,
   listModels,
   listSessions,
   pickRandomModel,
@@ -22,6 +24,7 @@ function initialState(defaultDirectory) {
     cwd: defaultDirectory,
     queue: Promise.resolve(),
     permissions: new Map(),
+    followGeneration: 0,
   };
 }
 
@@ -91,6 +94,65 @@ function formatPermission(permission) {
     `permission asked [${permission.id}]: ${permission.action}${resources}${message}` +
     `\nreply: /allow ${permission.id} | /always ${permission.id} | /reject ${permission.id}`
   );
+}
+
+/** Handles permission events for a single Messenger caller. */
+function permissionHandler(state, reply) {
+  return (permission) => {
+    if (permission.resolved) {
+      state.permissions.delete(permission.id);
+      return reply(`permission resolved: ${permission.id}`);
+    }
+    state.permissions.set(permission.id, permission);
+    return reply(formatPermission(permission));
+  };
+}
+
+/**
+ * Attaches a caller to a session and reports its state. If OpenCode is already working, it starts
+ * a live listener from this moment (no replay) and forwards thinking/errors/final answer.
+ */
+async function attachAndReport({ client, state, session, label, reply, log }) {
+  // Supersede any listener from a previous attachment/prompt.
+  state.followGeneration += 1;
+  state.sessionId = session.id;
+  const running = await isSessionActive(client, session.id);
+  const model = await activeModel(client, state);
+  const history = await getSessionHistory(client, session.id, 3);
+  const modelText = model
+    ? `${model.providerID}/${model.modelID} — ${model.name ?? ''}`
+    : 'default';
+
+  if (!running) {
+    return reply(
+      `Attached successfully to ${label}: ${session.id}\n${session.title ?? ''}\n` +
+        `active model: ${modelText}\n` +
+        'No operation is currently running on this session.\n\n' +
+        formatHistory(history),
+    );
+  }
+
+  const generation = state.followGeneration;
+  const send = (message) => (generation === state.followGeneration ? reply(message) : undefined);
+  await reply(
+    `Attached successfully to ${label}: ${session.id}\n${session.title ?? ''}\n` +
+      `active model: ${modelText}\n` +
+      'Operation running and reporting from now.\n\n' +
+      formatHistory(history),
+  );
+
+  log('follow', { sessionId: session.id, generation });
+  followSession(client, session.id, {
+    onThinking: thinkingRelay(send),
+    onError: send,
+    onPermission: permissionHandler(state, send),
+  })
+    .then((answer) => send(answer))
+    .catch((err) => {
+      if (err?.forwarded) return;
+      send(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  return undefined;
 }
 
 function formatHistory(turns) {
@@ -184,6 +246,7 @@ export function createCommandHandler({
       // Detach from current session
       if (/^\/exit$/i.test(text)) {
         state.sessionId = null;
+        state.followGeneration += 1;
         return reply('session exited');
       }
 
@@ -211,25 +274,31 @@ export function createCommandHandler({
             model = pickRandomModel(await refreshModels(state));
           }
           const session = await createSession(client, directory, model);
-          state.sessionId = session.id;
           if (model) state.lastModel = model;
-          const active = await activeModel(client, state);
-          const history = await getSessionHistory(client, session.id, 3);
-          return reply(
-            `Attached successfully to new session: ${session.id}\ndirectory: ${directory}\nactive model: ${active ? `${active.providerID}/${active.modelID} — ${active.name ?? ''}` : 'default'}\n\n${formatHistory(history)}`,
-          );
+          await attachAndReport({
+            client,
+            state,
+            session,
+            label: `new session in ${directory}`,
+            reply,
+            log,
+          });
+          return undefined;
         }
         const number = parseNumber(arg);
         if (!number) return reply('Usage: /session [number | new /directory]');
         if (!state.sessionList.length) await refreshSessions(state);
         const session = state.sessionList[number - 1];
         if (!session) return reply(`No session number ${number}. Send /session to see the list.`);
-        state.sessionId = session.id;
-        const active = await activeModel(client, state);
-        const history = await getSessionHistory(client, session.id, 3);
-        return reply(
-          `Attached successfully to session ${number}: ${session.id}\n${session.title ?? ''}\nactive model: ${active ? `${active.providerID}/${active.modelID} — ${active.name ?? ''}` : 'default'}\n\n${formatHistory(history)}`.trim(),
-        );
+        await attachAndReport({
+          client,
+          state,
+          session,
+          label: `session ${number}`,
+          reply,
+          log,
+        });
+        return undefined;
       }
 
       // /model ls and /models N (both spellings accepted)
@@ -295,20 +364,15 @@ export function createCommandHandler({
       // would capture the other's text deltas and produce mixed/duplicated final replies.
       // Queue prompts per caller so turns are processed strictly one after another.
       const runPrompt = async () => {
+        // A new prompt supersedes any live listener started at attach time.
+        state.followGeneration += 1;
         const answer = await promptAndWait(
           client,
           state.sessionId,
           text,
           thinkingRelay(reply),
           (error) => reply(error),
-          (permission) => {
-            if (permission.resolved) {
-              state.permissions.delete(permission.id);
-              return reply(`permission resolved: ${permission.id}`);
-            }
-            state.permissions.set(permission.id, permission);
-            return reply(formatPermission(permission));
-          },
+          permissionHandler(state, reply),
         );
         return reply(answer);
       };

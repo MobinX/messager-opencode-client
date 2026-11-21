@@ -9,6 +9,7 @@ function makeClient({
   thoughts = ['Let me check the answer.'],
   failStep = false,
   permission = false,
+  active = false,
 } = {}) {
   const sessionList = sessions ?? [
     { id: 's1', title: 'Session One', location: { directory: '/home/ubuntu/Oryxa' } },
@@ -35,6 +36,7 @@ function makeClient({
       },
       get: async ({ sessionID }) =>
         sessionList.find((s) => s.id === sessionID) ?? sessionList[0],
+      active: async () => (active ? { s1: { type: 'running' } } : {}),
     },
     message: {
       // SDK returns newest-first; timestamps are explicit so sorting is verifiable.
@@ -147,6 +149,37 @@ test('attaching to a session sends confirmation, model and last turns without to
   assert.match(text, /OpenCode: third answer/);
   assert.match(text, /#############/);
   assert.doesNotMatch(text, /old question|old answer|thinking\.\.\.|write_tool/);
+});
+
+test('attaching to an idle session says no operation is running', async () => {
+  const replies = [];
+  const { client } = makeClient({ active: false });
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
+  assert.match(replies[0], /Attached successfully to session 1/);
+  assert.match(replies[0], /No operation is currently running on this session/);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(replies.length, 1);
+});
+
+test('attaching to a running session reports and streams from that moment', async () => {
+  const replies = [];
+  const { client } = makeClient({ active: true });
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
+  assert.match(replies[0], /Operation running and reporting from now/);
+  await new Promise((r) => setTimeout(r, 500));
+  const joined = replies.join('\n');
+  assert.match(joined, /^thinking: Let me check the answer\./m);
+  assert.match(joined, /Hello from OpenCode/);
 });
 
 test('permission requests are forwarded and can be answered from Messenger', async () => {
