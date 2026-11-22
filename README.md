@@ -11,7 +11,9 @@ Messenger reply.
 
 - **Shell escape hatch:** any message starting with `!` runs locally (`!ls`, `!cd /tmp`, …) and the output is sent back.
 - **Stateful terminal:** `/bash` opens a persistent shell at `/home`; later messages are commands, state (cwd/exports) persists, and continuous output is streamed.
-- **Session control:** list, attach, create and detach OpenCode sessions from Messenger.
+- **Session control:** list, attach, create and detach OpenCode sessions from Messenger. The service
+  creates its **own dedicated session** on first start (`botSessionId` in `db.json`), so prompts
+  never loop back into the session currently running the service/agent.
 - **Model control:** list connected models and switch the attached session's model.
 - **Prompt streaming:** each completed OpenCode thinking step is relayed in a compact pattern, then the final answer is sent.
 - **Errors & permissions:** OpenCode failures and permission requests are forwarded; permissions can be answered from Messenger.
@@ -230,6 +232,9 @@ test/                node:test suites (commands + core/config/init)
 - **Messenger send failures are non-fatal.** If OnlyOrders/Meta rejects a reply (for example
   `graph_send_failed 100:2018034`), the error is logged as `reply-error` in `state.json` and the
   webhook receiver keeps running.
+- **Long turns won't produce a bare timeout.** The wait is 10 minutes by default
+  (`MSGCTRL_TIMEOUT_MS` overrides it), and if text has already been streamed when the wait expires
+  that text is delivered as the reply instead of an error.
 - **Tunnel failures are non-fatal.** A dead cloudflared process is restarted with backoff and the
   webhook URL is re-synced; the event is logged.
 - **One webhook only.** `msgctrl` always PUTs the stored webhook id instead of creating a new one,
@@ -244,11 +249,12 @@ export PATH="$HOME/.nvm/versions/node/v24.22.1/bin:$HOME/.opencode/bin:$PATH"
 npm test
 ```
 
-30 tests cover command routing, history sorting, thinking relay, error forwarding, permission
+32 tests cover command routing, history sorting, thinking relay, error forwarding, permission
 handling, config persistence, tunnel parsing (including watching a service log across restarts),
 systemd unit generation, service detection, dependency version/install checks, the stateful
-terminal (buffering + streaming), busy-session attach reporting, the callback receiver, and the
-full injected init flow. No live Messenger or OnlyOrders account is needed.
+terminal (buffering + streaming), busy-session attach reporting, dedicated-session defaults,
+partial-timeout handling, the callback receiver, and the full injected init flow. No live Messenger
+or OnlyOrders account is needed.
 
 ## Troubleshooting
 

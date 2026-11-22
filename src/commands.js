@@ -16,9 +16,9 @@ import { createTerminal as realCreateTerminal } from './terminal.js';
 
 const run = promisify(exec);
 
-function initialState(defaultDirectory) {
+function initialState(defaultDirectory, defaultSessionId = null) {
   return {
-    sessionId: null,
+    sessionId: defaultSessionId,
     sessionList: [],
     modelList: [],
     lastModel: null,
@@ -194,6 +194,7 @@ export function createCommandHandler({
   log = () => {},
   execCommand = run,
   createTerminal = realCreateTerminal,
+  defaultSessionId = null,
 }) {
   const states = new Map();
 
@@ -237,7 +238,7 @@ export function createCommandHandler({
     if (!text) return;
 
     const key = String(event?.customerInfo?.id ?? 'global');
-    const state = states.get(key) ?? initialState(defaultDirectory);
+    const state = states.get(key) ?? initialState(defaultDirectory, defaultSessionId);
     states.set(key, state);
     const pageId = String(event?.pageId ?? '');
     const reply = (message) => send(message, event);

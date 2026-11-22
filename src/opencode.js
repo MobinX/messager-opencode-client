@@ -118,7 +118,7 @@ async function streamTurn({
   onThinking = () => {},
   onError = () => {},
   onPermission = () => {},
-  timeoutMs = 180_000,
+  timeoutMs = Number(process.env.MSGCTRL_TIMEOUT_MS ?? 600_000),
 }) {
   const sending = text !== null;
   const controller = new AbortController();
@@ -230,8 +230,15 @@ async function streamTurn({
     const deadline = Date.now() + timeoutMs;
     while (!done && Date.now() < deadline) await sleep(250);
     if (!done) {
-      failed = 'timeout waiting for OpenCode reply';
-      emitError(failed, 'timeout');
+      const partial = Array.from(chunks.values()).join('\n').trim();
+      if (partial) {
+        // The turn is still running, but the assistant has already produced text. Deliver it
+        // instead of turning a long-but-working reply into an error.
+        done = true;
+      } else {
+        failed = 'timeout waiting for OpenCode reply';
+        emitError(failed, 'timeout');
+      }
     }
   } catch (err) {
     failed = err instanceof Error ? err.message : String(err);

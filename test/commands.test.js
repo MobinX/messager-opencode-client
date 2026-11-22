@@ -320,6 +320,51 @@ test('typing exit inside the terminal closes terminal mode', async () => {
   assert.match(replies.at(-1), /No session currently attached/);
 });
 
+test('defaultSessionId makes normal messages prompts without attaching first', async () => {
+  const replies = [];
+  const { client, calls } = makeClient();
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    defaultSessionId: 's1',
+    send: async (text) => replies.push(text),
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hello' } });
+  assert.equal(calls.prompt.at(-1).sessionID, 's1');
+  assert.equal(replies.at(-1), 'Hello from OpenCode');
+  assert.doesNotMatch(replies.join('\n'), /No session currently attached/);
+});
+
+test('promptAndWait returns streamed text instead of a timeout error when text exists', async () => {
+  const { promptAndWait } = await import('../src/opencode.js');
+  const errors = [];
+  const client = {
+    session: { prompt: async () => {} },
+    event: {
+      subscribe: () =>
+        (async function* () {
+          yield { type: 'server.connected', data: {} };
+          yield {
+            type: 'session.text.delta',
+            data: { sessionID: 's9', assistantMessageID: 'a9', delta: 'Partial answer' },
+          };
+          await new Promise(() => {});
+        })(),
+    },
+  };
+  const answer = await promptAndWait(
+    client,
+    's9',
+    'hi',
+    () => {},
+    (error) => errors.push(error),
+    () => {},
+    300,
+  );
+  assert.equal(answer, 'Partial answer');
+  assert.deepEqual(errors, []);
+});
+
 test('!command runs directly and returns its output', async () => {
   const { replies, incoming } = setup();
   await incoming('!ls -la');

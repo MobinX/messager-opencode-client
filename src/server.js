@@ -1,7 +1,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import { createCommandHandler } from './commands.js';
-import { connect } from './opencode.js';
+import { connect, createSession, listModels, pickRandomModel } from './opencode.js';
 import {
   registerWebhook,
   sendMessage,
@@ -40,6 +40,7 @@ export function createHttpServer({
   port = PORT,
   client = null,
   defaultDirectory = DEFAULT_DIRECTORY,
+  defaultSessionId = null,
   onSelectedPages = () => {},
   onWebhookEvent = () => {},
   log = () => {},
@@ -48,6 +49,7 @@ export function createHttpServer({
     ? createCommandHandler({
         client,
         defaultDirectory,
+        defaultSessionId,
         send: (text, event) => {
           const targetPage = String(event?.pageId ?? pageId ?? '');
           const recipientId = String(event?.customerInfo?.id ?? '');
@@ -154,6 +156,25 @@ export async function startRuntime({ port = PORT, logger = console } = {}) {
   const { client, endpoint } = await connect();
   logger.log(`[opencode] connected to ${endpoint.url}`);
 
+  // Give the bot its own session so Messenger prompts never loop back into the session that is
+  // currently running this service/agent work.
+  let botSessionId = db.botSessionId;
+  if (!botSessionId) {
+    const models = await listModels(client);
+    const model =
+      models.find((candidate) => candidate.modelID === 'hy4-flash-free') ??
+      pickRandomModel(models) ??
+      null;
+    const session = await createSession(
+      client,
+      db.defaultDirectory ?? DEFAULT_DIRECTORY,
+      model,
+    );
+    botSessionId = session.id;
+    saveDb({ botSessionId });
+    logger.log(`[opencode] dedicated bot session: ${botSessionId}`);
+  }
+
   let activeServer = null;
   const onWebhookSync = async (baseUrl) => {
     activeServer?.setPublicUrl(baseUrl);
@@ -179,6 +200,7 @@ export async function startRuntime({ port = PORT, logger = console } = {}) {
     port,
     client,
     defaultDirectory: db.defaultDirectory ?? DEFAULT_DIRECTORY,
+    defaultSessionId: botSessionId,
     log: (kind, detail) => logState(kind, JSON.stringify(detail)),
   });
   await new Promise((resolve, reject) => {
