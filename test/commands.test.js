@@ -39,10 +39,13 @@ function makeClient({
       active: async () => (active ? { s1: { type: 'running' } } : {}),
     },
     permission: {
-      list: async () =>
-        permission
-          ? [{ id: 'perm-1', sessionID: 's1', action: 'write', resources: ['/tmp/file.txt'], message: 'Allow writing the file?' }]
-          : [],
+      request: {
+        list: async () => ({
+          data: permission
+            ? [{ id: 'perm-1', sessionID: 's1', action: 'write', resources: ['/tmp/file.txt'], message: 'Allow writing the file?' }]
+            : [],
+        }),
+      },
       reply: async (input) => calls.permissionReply.push(input),
     },
     message: {

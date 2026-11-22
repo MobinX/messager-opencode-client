@@ -184,7 +184,9 @@ test('session poller forwards new assistant messages and permissions', async () 
   const client = {
     message: { list: async () => ({ data: messages }) },
     permission: {
-      list: async () => [{ id: 'p1', sessionID: 's1', action: 'write', resources: [] }],
+      request: {
+        list: async () => ({ data: [{ id: 'p1', sessionID: 's1', action: 'write', resources: [] }] }),
+      },
     },
   };
   const thinking = [];

@@ -43,8 +43,9 @@ export function createSessionPoller({
         .filter((message) => (message.time?.created ?? 0) >= startedAtAdjusted)
         .sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0));
 
-      if (client.permission?.list) {
-        const pending = await client.permission.list();
+      if (client.permission?.request?.list) {
+        const result = await client.permission.request.list();
+        const pending = result.data ?? [];
         const ids = new Set((pending ?? []).map((request) => String(request.id)));
         for (const request of pending ?? []) {
           if (seenPermissions.has(request.id)) continue;
