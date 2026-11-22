@@ -12,7 +12,6 @@ import {
 } from './opencode.js';
 import { createTerminal as realCreateTerminal } from './terminal.js';
 import { createSessionPoller } from './poller.js';
-import { loadDb } from './config.js';
 
 const run = promisify(exec);
 
@@ -31,14 +30,13 @@ function initialState(defaultDirectory, defaultSessionId = null) {
   };
 }
 
-function numberedSessions(sessions, controlSessionId = null) {
+function numberedSessions(sessions) {
   if (!sessions.length) return 'No OpenCode sessions found.';
   return sessions
     .map((session, index) => {
       const title = session.title || session.id;
       const dir = session.location?.directory ? ` — ${session.location.directory}` : '';
-      const mark = session.id === controlSessionId ? ' [CONTROL — do not attach]' : '';
-      return `${index + 1}. ${title} (${session.id})${dir}${mark}`;
+      return `${index + 1}. ${title} (${session.id})${dir}`;
     })
     .join('\n');
 }
@@ -181,16 +179,6 @@ export function createCommandHandler({
 
   /** Attaches a caller and starts the polling worker that owns all output from now on. */
   async function attachAndReport(state, session, label, reply) {
-    // Never attach to the harness/control session — prompts there loop back into the agent that
-    // is answering these Messenger messages, so it can never show a completed reply.
-    const control = loadDb().controlSessionId;
-    if (control && session.id === control) {
-      return reply(
-        'That is the control session running this assistant — attaching to it creates a loop. ' +
-          'Attach to a "Messenger control panel" session instead (send /session to list them, ' +
-          'or /session new /home/ubuntu/Oryxa).',
-      );
-    }
     stopPoller(state);
     state.sessionId = session.id;
     const running = await isSessionActive(client, session.id);
@@ -256,7 +244,6 @@ export function createCommandHandler({
     states.set(key, state);
     const pageId = String(event?.pageId ?? '');
     const reply = (message) => send(message, event);
-    const controlSessionId = loadDb().controlSessionId;
 
     // A default session may be set at startup; begin polling on the first interaction so output
     // from any already-running turn is reported without waiting for an explicit attach.
@@ -325,7 +312,7 @@ export function createCommandHandler({
         }
         if (!arg) {
           const sessions = await refreshSessions(state);
-          return reply(`OpenCode sessions:\n${numberedSessions(sessions, controlSessionId)}`);
+          return reply(`OpenCode sessions:\n${numberedSessions(sessions)}`);
         }
         if (/^new(?:\s+(.*))?$/i.test(arg)) {
           const dirMatch = /^new\s+(.+)$/i.exec(arg);
@@ -366,7 +353,7 @@ export function createCommandHandler({
         if (!state.sessionId) {
           const sessions = await refreshSessions(state);
           return reply(
-            `No session attached — connect one first:\n${numberedSessions(sessions, controlSessionId)}`,
+            `No session attached — connect one first:\n${numberedSessions(sessions)}`,
           );
         }
         const number = parseNumber(arg);
@@ -402,7 +389,7 @@ export function createCommandHandler({
       if (!state.sessionId) {
         const sessions = await refreshSessions(state);
         return reply(
-          `No session currently attached. Connect one and send your message again:\n${numberedSessions(sessions, controlSessionId)}`,
+          `No session currently attached. Connect one and send your message again:\n${numberedSessions(sessions)}`,
         );
       }
 

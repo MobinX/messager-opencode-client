@@ -208,6 +208,28 @@ test('session poller forwards new assistant messages and permissions', async () 
   poller.stop();
 });
 
+test('session poller forwards multiple messages newest-first by timestamp', async () => {
+  const now = Date.now();
+  // Deliberately not in chronological order: the SDK may return them in any order.
+  const messages = [
+    { id: 'old', type: 'assistant', time: { created: now - 200, completed: now - 199 }, content: [{ type: 'text', text: 'oldest answer' }] },
+    { id: 'new', type: 'assistant', time: { created: now, completed: now + 1 }, content: [{ type: 'text', text: 'newest answer' }] },
+    { id: 'mid', type: 'assistant', time: { created: now - 100, completed: now - 99 }, content: [{ type: 'text', text: 'middle answer' }] },
+  ];
+  const client = { message: { list: async () => ({ data: messages }) } };
+  const replies = [];
+  const poller = makePoller({
+    client,
+    sessionID: 's1',
+    intervalMs: 20,
+    onReply: (text) => replies.push(text),
+    logger: { error() {} },
+  });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(replies, ['newest answer', 'middle answer', 'oldest answer']);
+  poller.stop();
+});
+
 test('installer parses versions and reports v2 correctly', () => {
   assert.equal(installerLib.parseVersion('opencode v2.2.0'), '2.2.0');
   assert.equal(installerLib.majorVersion('2026.10.7'), 2026);

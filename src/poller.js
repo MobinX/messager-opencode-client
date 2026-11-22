@@ -5,6 +5,9 @@
  * every few seconds. It starts when a Messenger user attaches, so it reports both prompts sent
  * through the bot and work already running when the user attached. Only messages created after the
  * poll started are delivered — nothing is replayed from the beginning of the session.
+ *
+ * When a poll returns several message objects they are ordered by their timestamp with the newest
+ * first (then gradually older), and forwarded to Messenger in that order.
  */
 export function createSessionPoller({
   client,
@@ -38,10 +41,11 @@ export function createSessionPoller({
     if (stopped || inFlight) return;
     inFlight = true;
     try {
-      const result = await client.message.list({ sessionID, limit: 100, order: 'asc' });
+      const result = await client.message.list({ sessionID, limit: 100, order: 'desc' });
       const messages = (result.data ?? [])
         .filter((message) => (message.time?.created ?? 0) >= startedAtAdjusted)
-        .sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0));
+        // Newest first: index 0 is the most recent message, gradually older after it.
+        .sort((a, b) => (b.time?.created ?? 0) - (a.time?.created ?? 0));
 
       if (client.permission?.request?.list) {
         const result = await client.permission.request.list();

@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createCommandHandler } from '../src/commands.js';
 import { splitText } from '../src/onlyorders.js';
 
@@ -161,6 +164,34 @@ test('/session pwd and /model pwd show active session and model', async () => {
   await incoming('/model pwd');
   assert.match(replies.at(-1).text, /Active model:/);
   assert.match(replies.at(-1).text, /session: s1/);
+});
+
+test('attaching to the control session is allowed (guardrail removed)', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'msgctrl-control-'));
+  const previousHome = process.env.MSGCTRL_HOME;
+  process.env.MSGCTRL_HOME = tmp;
+  try {
+    fs.writeFileSync(path.join(tmp, 'db.json'), JSON.stringify({ controlSessionId: 's-control' }));
+    const replies = [];
+    const { client } = makeClient({
+      sessions: [{ id: 's-control', title: 'Control session', location: { directory: '/tmp' } }],
+    });
+    const handle = createCommandHandler({
+      client,
+      defaultDirectory: '/default',
+      send: async (text) => replies.push(text),
+      createSessionPoller: () => ({ stop() {}, tick() {} }),
+    });
+    await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session' } });
+    assert.doesNotMatch(replies.join('\n'), /do not attach/);
+    replies.length = 0;
+    await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
+    assert.match(replies[0], /Attached successfully to session 1: s-control/);
+    assert.doesNotMatch(replies.join('\n'), /control session running this assistant/);
+  } finally {
+    if (previousHome === undefined) delete process.env.MSGCTRL_HOME;
+    else process.env.MSGCTRL_HOME = previousHome;
+  }
 });
 
 test('attaching to a session sends confirmation, model and last turns without tool chatter', async () => {
