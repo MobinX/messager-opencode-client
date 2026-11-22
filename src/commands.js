@@ -2,17 +2,16 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   createSession,
-  followSession,
   getSession,
   getSessionHistory,
   isSessionActive,
   listModels,
   listSessions,
   pickRandomModel,
-  promptAndWait,
   switchModel,
 } from './opencode.js';
 import { createTerminal as realCreateTerminal } from './terminal.js';
+import { createSessionPoller } from './poller.js';
 
 const run = promisify(exec);
 
@@ -26,6 +25,7 @@ function initialState(defaultDirectory, defaultSessionId = null) {
     queue: Promise.resolve(),
     permissions: new Map(),
     followGeneration: 0,
+    poller: null,
     terminal: null,
   };
 }
@@ -110,53 +110,6 @@ function permissionHandler(state, reply) {
   };
 }
 
-/**
- * Attaches a caller to a session and reports its state. If OpenCode is already working, it starts
- * a live listener from this moment (no replay) and forwards thinking/errors/final answer.
- */
-async function attachAndReport({ client, state, session, label, reply, log }) {
-  // Supersede any listener from a previous attachment/prompt.
-  state.followGeneration += 1;
-  state.sessionId = session.id;
-  const running = await isSessionActive(client, session.id);
-  const model = await activeModel(client, state);
-  const history = await getSessionHistory(client, session.id, 3);
-  const modelText = model
-    ? `${model.providerID}/${model.modelID} — ${model.name ?? ''}`
-    : 'default';
-
-  if (!running) {
-    return reply(
-      `Attached successfully to ${label}: ${session.id}\n${session.title ?? ''}\n` +
-        `active model: ${modelText}\n` +
-        'No operation is currently running on this session.\n\n' +
-        formatHistory(history),
-    );
-  }
-
-  const generation = state.followGeneration;
-  const send = (message) => (generation === state.followGeneration ? reply(message) : undefined);
-  await reply(
-    `Attached successfully to ${label}: ${session.id}\n${session.title ?? ''}\n` +
-      `active model: ${modelText}\n` +
-      'Operation running and reporting from now.\n\n' +
-      formatHistory(history),
-  );
-
-  log('follow', { sessionId: session.id, generation });
-  followSession(client, session.id, {
-    onThinking: thinkingRelay(send),
-    onError: send,
-    onPermission: permissionHandler(state, send),
-  })
-    .then((answer) => send(answer))
-    .catch((err) => {
-      if (err?.forwarded) return;
-      send(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  return undefined;
-}
-
 function formatHistory(turns) {
   if (!turns.length) return 'History: (none yet)';
   return (
@@ -194,9 +147,58 @@ export function createCommandHandler({
   log = () => {},
   execCommand = run,
   createTerminal = realCreateTerminal,
+  createSessionPoller: makePoller = createSessionPoller,
   defaultSessionId = null,
 }) {
   const states = new Map();
+
+  function stopPoller(state) {
+    if (state.poller) {
+      state.poller.stop();
+      state.poller = null;
+    }
+    state.followGeneration += 1;
+  }
+
+  function startPoller(state, sessionID, reply) {
+    stopPoller(state);
+    const generation = state.followGeneration;
+    const send = (message) => (generation === state.followGeneration ? reply(message) : undefined);
+    state.poller = makePoller({
+      client,
+      sessionID,
+      onThinking: thinkingRelay(send),
+      onReply: send,
+      onError: (error) => send(`error [poll]: ${error}`),
+      onPermission: permissionHandler(state, send),
+      intervalMs: Number(process.env.MSGCTRL_POLL_MS ?? 3000),
+      logger: { error: (message) => log('poll-error', { message }) },
+    });
+    log('poll-start', { sessionID, generation });
+  }
+
+  /** Attaches a caller and starts the polling worker that owns all output from now on. */
+  async function attachAndReport(state, session, label, reply) {
+    stopPoller(state);
+    state.sessionId = session.id;
+    const running = await isSessionActive(client, session.id);
+    const model = await activeModel(client, state);
+    const history = await getSessionHistory(client, session.id, 3);
+    const modelText = model
+      ? `${model.providerID}/${model.modelID} — ${model.name ?? ''}`
+      : 'default';
+    const status = running
+      ? 'Operation running and reporting from now.'
+      : 'No operation is currently running on this session.';
+
+    await reply(
+      `Attached successfully to ${label}: ${session.id}\n${session.title ?? ''}\n` +
+        `active model: ${modelText}\n${status}\n\n${formatHistory(history)}`,
+    );
+    // Polling starts at attach time and stays until /exit, another attach, or terminal mode.
+    startPoller(state, session.id, reply);
+    return undefined;
+  }
 
   async function refreshSessions(state) {
     state.sessionList = await listSessions(client);
@@ -243,6 +245,12 @@ export function createCommandHandler({
     const pageId = String(event?.pageId ?? '');
     const reply = (message) => send(message, event);
 
+    // A default session may be set at startup; begin polling on the first interaction so output
+    // from any already-running turn is reported without waiting for an explicit attach.
+    if (state.sessionId && !state.poller && !state.terminal) {
+      startPoller(state, state.sessionId, reply);
+    }
+
     // Full terminal mode: every subsequent message is a command until /exit or `exit`.
     if (state.terminal) {
       if (/^\/exit$/i.test(text)) {
@@ -265,6 +273,7 @@ export function createCommandHandler({
 
     if (/^\/bash$/i.test(text)) {
       if (state.terminal) return reply('terminal already open');
+      stopPoller(state);
       state.terminal = createTerminal({
         cwd: '/home',
         onOutput: (text) => reply(text),
@@ -284,8 +293,8 @@ export function createCommandHandler({
 
       // Detach from current session
       if (/^\/exit$/i.test(text)) {
+        stopPoller(state);
         state.sessionId = null;
-        state.followGeneration += 1;
         return reply('session exited');
       }
 
@@ -314,14 +323,7 @@ export function createCommandHandler({
           }
           const session = await createSession(client, directory, model);
           if (model) state.lastModel = model;
-          await attachAndReport({
-            client,
-            state,
-            session,
-            label: `new session in ${directory}`,
-            reply,
-            log,
-          });
+          await attachAndReport(state, session, `new session in ${directory}`, reply);
           return undefined;
         }
         const number = parseNumber(arg);
@@ -329,14 +331,7 @@ export function createCommandHandler({
         if (!state.sessionList.length) await refreshSessions(state);
         const session = state.sessionList[number - 1];
         if (!session) return reply(`No session number ${number}. Send /session to see the list.`);
-        await attachAndReport({
-          client,
-          state,
-          session,
-          label: `session ${number}`,
-          reply,
-          log,
-        });
+        await attachAndReport(state, session, `session ${number}`, reply);
         return undefined;
       }
 
@@ -403,23 +398,14 @@ export function createCommandHandler({
       // would capture the other's text deltas and produce mixed/duplicated final replies.
       // Queue prompts per caller so turns are processed strictly one after another.
       const runPrompt = async () => {
-        // A new prompt supersedes any live listener started at attach time.
-        state.followGeneration += 1;
-        const answer = await promptAndWait(
-          client,
-          state.sessionId,
-          text,
-          thinkingRelay(reply),
-          (error) => reply(error),
-          permissionHandler(state, reply),
-        );
-        return reply(answer);
+        // Do not listen for output here — the polling worker owns that. Just enqueue the turn.
+        await client.session.prompt({ sessionID: state.sessionId, text });
+        return undefined;
       };
       state.queue = state.queue.then(runPrompt, runPrompt);
       return state.queue;
     } catch (err) {
       log('error', { message: err instanceof Error ? err.message : String(err) });
-      // promptAndWait already forwarded streamed errors; don't send them a second time.
       if (err?.forwarded) return undefined;
       return reply(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }

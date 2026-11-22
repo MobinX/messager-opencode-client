@@ -15,7 +15,7 @@ Messenger reply.
   creates its **own dedicated session** on first start (`botSessionId` in `db.json`), so prompts
   never loop back into the session currently running the service/agent.
 - **Model control:** list connected models and switch the attached session's model.
-- **Prompt streaming:** each completed OpenCode thinking step is relayed in a compact pattern, then the final answer is sent.
+- **Polling output:** after attaching a session the bot polls its messages every 3 s (`MSGCTRL_POLL_MS` overrides it). Output from prompts sent through the bot **and** from turns already running when you attached is delivered by the same poller. It stops on `/exit`, a new attach, or `/bash`.
 - **Errors & permissions:** OpenCode failures and permission requests are forwarded; permissions can be answered from Messenger.
 - **Attachment summary:** attaching a session sends a confirmation, the active model and the last 3 turns (user + final reply only).
 - **Self-healing tunnel:** a Cloudflare quick tunnel is started on every run, the OnlyOrders webhook is re-pointed automatically, and restarts are logged.
@@ -177,6 +177,20 @@ Health check: `curl http://localhost:8788/health`
 | `/allow <id>` / `/always <id>` / `/reject <id>` | Answer a forwarded OpenCode permission request |
 | anything else | Prompt for the attached session; if none is attached, you get the session list |
 
+### Polling output model
+
+The bot no longer subscribes to OpenCode's live event stream for output. When you attach to a
+session it starts a polling worker that calls `GET /session/:id/message` every 3 seconds, filters
+messages created after the attach time, and forwards:
+
+- `reasoning` parts through the compact thinking relay,
+- `text` parts **once** when the assistant message is complete (no partial/duplicate replies),
+- assistant errors as `error [poll]: ...`,
+- pending permission requests, which can be answered with `/allow`, `/always`, `/reject`.
+
+This means it also reports output from work that was already running before you attached, and
+prompts only enqueue work — the poller owns all reporting until `/exit`, another attach, or `/bash`.
+
 ### Terminal mode (`/bash`)
 
 `/bash` spawns one persistent bash process for that Messenger user, starting at `/home`:
@@ -249,12 +263,12 @@ export PATH="$HOME/.nvm/versions/node/v24.22.1/bin:$HOME/.opencode/bin:$PATH"
 npm test
 ```
 
-32 tests cover command routing, history sorting, thinking relay, error forwarding, permission
+33 tests cover command routing, history sorting, thinking relay, error forwarding, permission
 handling, config persistence, tunnel parsing (including watching a service log across restarts),
 systemd unit generation, service detection, dependency version/install checks, the stateful
 terminal (buffering + streaming), busy-session attach reporting, dedicated-session defaults,
-partial-timeout handling, the callback receiver, and the full injected init flow. No live Messenger
-or OnlyOrders account is needed.
+partial-timeout handling, the 3-second polling worker, the callback receiver, and the full injected
+init flow. No live Messenger or OnlyOrders account is needed.
 
 ## Troubleshooting
 

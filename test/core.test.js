@@ -19,6 +19,7 @@ const { findBinary, activeSystemdUnit, detectServices } = await import('../src/s
 const { runInit } = await import('../src/init.js');
 const { createTerminal } = await import('../src/terminal.js');
 const installerLib = await import('../src/installer.js');
+const { createSessionPoller: makePoller } = await import('../src/poller.js');
 const { createHttpServer } = await import('../src/server.js');
 
 function freePort() {
@@ -164,6 +165,45 @@ test('terminal buffers fast output into one message but streams long-running out
   assert.equal(chunks[0], 'slow1\n');
   assert.match(chunks.join(''), /slow2/);
   terminal.kill();
+});
+
+test('session poller forwards new assistant messages and permissions', async () => {
+  const now = Date.now();
+  const messages = [
+    {
+      id: 'a1',
+      type: 'assistant',
+      time: { created: now, completed: now + 1 },
+      content: [
+        { type: 'reasoning', text: 'considering' },
+        { type: 'text', text: 'polled answer' },
+        { type: 'tool', name: 'write' },
+      ],
+    },
+  ];
+  const client = {
+    message: { list: async () => ({ data: messages }) },
+    permission: {
+      list: async () => [{ id: 'p1', sessionID: 's1', action: 'write', resources: [] }],
+    },
+  };
+  const thinking = [];
+  const replies = [];
+  const permissions = [];
+  const poller = makePoller({
+    client,
+    sessionID: 's1',
+    intervalMs: 20,
+    onThinking: (text) => thinking.push(text),
+    onReply: (text) => replies.push(text),
+    onPermission: (request) => permissions.push(request),
+    logger: { error() {} },
+  });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(thinking, ['considering']);
+  assert.deepEqual(replies, ['polled answer']);
+  assert.equal(permissions[0]?.id, 'p1');
+  poller.stop();
 });
 
 test('installer parses versions and reports v2 correctly', () => {

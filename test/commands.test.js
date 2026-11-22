@@ -38,17 +38,25 @@ function makeClient({
         sessionList.find((s) => s.id === sessionID) ?? sessionList[0],
       active: async () => (active ? { s1: { type: 'running' } } : {}),
     },
+    permission: {
+      list: async () =>
+        permission
+          ? [{ id: 'perm-1', sessionID: 's1', action: 'write', resources: ['/tmp/file.txt'], message: 'Allow writing the file?' }]
+          : [],
+      reply: async (input) => calls.permissionReply.push(input),
+    },
     message: {
       // SDK returns newest-first; timestamps are explicit so sorting is verifiable.
       list: async () => ({
         data: [
-          { type: 'assistant', time: { created: 400 }, content: [{ type: 'text', text: 'third answer' }] },
-          { type: 'user', time: { created: 399 }, text: 'third question' },
-          { type: 'assistant', time: { created: 300 }, content: [{ type: 'text', text: 'second answer' }] },
+          { id: 'm3', type: 'assistant', time: { created: 400, completed: 401 }, content: [{ type: 'text', text: 'third answer' }] },
+          { id: 'u3', type: 'user', time: { created: 399 }, text: 'third question' },
+          { id: 'm2', type: 'assistant', time: { created: 300, completed: 301 }, content: [{ type: 'text', text: 'second answer' }] },
           { type: 'user', time: { created: 299 }, text: 'second question' },
           {
+            id: 'm1',
             type: 'assistant',
-            time: { created: 200 },
+            time: { created: 200, completed: 201 },
             content: [
               { type: 'reasoning', text: 'thinking...' },
               { type: 'text', text: 'first answer' },
@@ -56,15 +64,12 @@ function makeClient({
             ],
           },
           { type: 'user', time: { created: 199 }, text: 'first question' },
-          { type: 'assistant', time: { created: 100 }, content: [{ type: 'text', text: 'old answer' }] },
+          { id: 'm0', type: 'assistant', time: { created: 100, completed: 101 }, content: [{ type: 'text', text: 'old answer' }] },
           { type: 'user', time: { created: 99 }, text: 'old question' },
         ],
       }),
     },
     model: { list: async () => ({ data: modelList }) },
-    permission: {
-      reply: async (input) => calls.permissionReply.push(input),
-    },
     event: {
       subscribe: () =>
         (async function* () {
@@ -114,14 +119,34 @@ function setup(overrides = {}) {
   const replies = [];
   const { client, calls, sessionList, modelList } = makeClient(overrides);
   const execCommand = async (command) => ({ stdout: `output of ${command}`, stderr: '' });
+  let poller = null;
   const handle = createCommandHandler({
     client,
     execCommand,
     defaultDirectory: '/default',
     send: async (text, event) => replies.push({ text, event }),
+    createSessionPoller: (options) => {
+      poller = {
+        ...options,
+        stopped: false,
+        tick: () => {
+          options.onThinking?.('Let me check the answer.');
+          options.onReply?.('Hello from OpenCode');
+        },
+        stop() { this.stopped = true; },
+      };
+      return poller;
+    },
   });
   const incoming = (text) => handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text } });
-  return { replies, calls, sessionList, modelList, incoming };
+  return {
+    replies,
+    calls,
+    sessionList,
+    modelList,
+    incoming,
+    get poller() { return poller; },
+  };
 }
 
 test('/session pwd and /model pwd show active session and model', async () => {
@@ -166,17 +191,30 @@ test('attaching to an idle session says no operation is running', async () => {
   assert.equal(replies.length, 1);
 });
 
-test('attaching to a running session reports and streams from that moment', async () => {
+test('attaching to a running session starts polling and streams from that moment', async () => {
   const replies = [];
   const { client } = makeClient({ active: true });
+  let poller;
   const handle = createCommandHandler({
     client,
     defaultDirectory: '/default',
     send: async (text) => replies.push(text),
+    createSessionPoller: (options) => {
+      poller = {
+        ...options,
+        stop() {},
+        tick: () => {
+          options.onThinking?.('Let me check the answer.');
+          options.onReply?.('Hello from OpenCode');
+        },
+      };
+      return poller;
+    },
   });
   await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
   assert.match(replies[0], /Operation running and reporting from now/);
-  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(poller.sessionID, 's1');
+  poller.tick();
   const joined = replies.join('\n');
   assert.match(joined, /^thinking: Let me check the answer\./m);
   assert.match(joined, /Hello from OpenCode/);
@@ -185,14 +223,29 @@ test('attaching to a running session reports and streams from that moment', asyn
 test('permission requests are forwarded and can be answered from Messenger', async () => {
   const replies = [];
   const { client, calls } = makeClient({ permission: true });
+  let poller;
   const handle = createCommandHandler({
     client,
     defaultDirectory: '/default',
     send: async (text) => replies.push(text),
+    createSessionPoller: (options) => {
+      poller = {
+        ...options,
+        stop() {},
+        tick: () => options.onPermission?.({
+          id: 'perm-1',
+          sessionID: 's1',
+          action: 'write',
+          resources: ['/tmp/file.txt'],
+          message: 'Allow writing the file?',
+        }),
+      };
+      return poller;
+    },
   });
   await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
   replies.length = 0;
-  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hi' } });
+  poller.tick();
   const forwarded = replies.find((r) => r.startsWith('permission asked'));
   assert.match(forwarded, /permission asked \[perm-1\]: write/);
   assert.match(forwarded, /resources: \/tmp\/file\.txt/);
@@ -209,31 +262,55 @@ test('permission requests are forwarded and can be answered from Messenger', asy
 test('a failed tool step does not prevent the final reply', async () => {
   const replies = [];
   const { client } = makeClient({ failStep: true });
+  let poller;
   const handle = createCommandHandler({
     client,
     defaultDirectory: '/default',
     send: async (text) => replies.push(text),
+    createSessionPoller: (options) => {
+      poller = {
+        ...options,
+        stop() {},
+        tick: () => {
+          options.onError?.('one tool failed');
+          options.onReply?.('Hello from OpenCode');
+        },
+      };
+      return poller;
+    },
   });
   await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
   replies.length = 0;
-  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hi' } });
+  poller.tick();
   assert.equal(replies.at(-1), 'Hello from OpenCode');
-  assert.match(replies.join('\n'), /error \[session.step.failed\]: one tool failed/);
+  assert.match(replies.join('\n'), /error \[poll\]: one tool failed/);
 });
 
 test('thinking relay sends 1st full, skips 2, sends compact 4th, then full 5th', async () => {
   const replies = [];
-  const { client } = makeClient({
-    thoughts: ['step one', 'step two', 'step three', 'step four', 'step five'],
-  });
+  const { client } = makeClient();
+  let poller;
   const handle = createCommandHandler({
     client,
     defaultDirectory: '/default',
     send: async (text) => replies.push(text),
+    createSessionPoller: (options) => {
+      poller = {
+        ...options,
+        stop() {},
+        tick: () => {
+          for (const thought of ['step one', 'step two', 'step three', 'step four', 'step five']) {
+            options.onThinking?.(thought);
+          }
+          options.onReply?.('Hello from OpenCode');
+        },
+      };
+      return poller;
+    },
   });
   await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session 1' } });
   replies.length = 0;
-  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hi' } });
+  poller.tick();
   assert.deepEqual(replies, [
     'thinking: step one',
     '(Thinking.....)',
@@ -323,14 +400,20 @@ test('typing exit inside the terminal closes terminal mode', async () => {
 test('defaultSessionId makes normal messages prompts without attaching first', async () => {
   const replies = [];
   const { client, calls } = makeClient();
-  const handle = createCommandHandler({
+  let poller;
+  const handleWithPoller = createCommandHandler({
     client,
     defaultDirectory: '/default',
     defaultSessionId: 's1',
     send: async (text) => replies.push(text),
+    createSessionPoller: (options) => {
+      poller = { ...options, stop() {}, tick: () => options.onReply?.('Hello from OpenCode') };
+      return poller;
+    },
   });
-  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hello' } });
+  await handleWithPoller({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: 'hello' } });
   assert.equal(calls.prompt.at(-1).sessionID, 's1');
+  poller.tick();
   assert.equal(replies.at(-1), 'Hello from OpenCode');
   assert.doesNotMatch(replies.join('\n'), /No session currently attached/);
 });
@@ -397,11 +480,13 @@ test('/session lists then /session 2 attaches', async () => {
   assert.match(replies.at(-1).text, /Attached successfully to session 2: s2/);
 });
 
-test('prompt streams thinking updates then the final answer, without tool chatter', async () => {
-  const { replies, calls, incoming } = setup();
+test('prompt is enqueued and the poller delivers thinking then the final answer', async () => {
+  const ctx = setup();
+  const { replies, calls, incoming } = ctx;
   await incoming('/session 1');
   await incoming('what is 2+2?');
   assert.equal(calls.prompt.at(-1).text, 'what is 2+2?');
+  ctx.poller.tick();
   assert.equal(replies.at(-2).text, 'thinking: Let me check the answer.');
   assert.equal(replies.at(-1).text, 'Hello from OpenCode');
   assert.doesNotMatch(replies.at(-1).text, /calling tool|write_tool/);
