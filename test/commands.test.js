@@ -13,6 +13,10 @@ function makeClient({
   failStep = false,
   permission = false,
   active = false,
+  projects = [],
+  worktrees = {},
+  worktreeError = null,
+  sessionCreateError = null,
 } = {}) {
   const sessionList = sessions ?? [
     { id: 's1', title: 'Session One', location: { directory: '/home/ubuntu/Oryxa' } },
@@ -22,14 +26,15 @@ function makeClient({
     { providerID: 'opencode', modelID: 'm1', name: 'Model One', type: 'chat', enabled: true },
     { providerID: 'anthropic', modelID: 'm2', name: 'Model Two', type: 'chat', enabled: true },
   ];
-  const calls = { create: [], switchModel: [], prompt: [], permissionReply: [] };
+  const calls = { create: [], switchModel: [], prompt: [], permissionReply: [], worktree: [] };
 
   const client = {
     session: {
       list: async () => ({ data: sessionList }),
       create: async (input) => {
+        if (sessionCreateError) throw new Error(sessionCreateError);
         calls.create.push(input);
-        const created = { id: 'new-1', title: input.title, location: input.location };
+        const created = { id: `new-${calls.create.length}`, title: input.title, location: input.location };
         sessionList.push(created);
         return created;
       },
@@ -76,6 +81,15 @@ function makeClient({
       }),
     },
     model: { list: async () => ({ data: modelList }) },
+    project: { list: async () => projects },
+    worktree: {
+      list: async ({ projectID }) => worktrees[projectID] ?? [],
+      create: async (input) => {
+        if (worktreeError) throw new Error(worktreeError);
+        calls.worktree.push(input);
+        return { directory: `/worktrees/${input.name}` };
+      },
+    },
     event: {
       subscribe: () =>
         (async function* () {
@@ -554,19 +568,99 @@ test('/models 1 with no session asks the user to connect first', async () => {
   assert.match(text, /1\. Session One/);
 });
 
-test('/session new creates a session in the given directory and remembers the chosen model', async () => {
+test('/session new requires a session name and creates the session with that title', async () => {
   const { replies, calls, incoming } = setup();
   await incoming('/session new /home/oryxa');
-  assert.match(replies.at(-1).text, /Attached successfully to new session/);
+  assert.match(replies.at(-1).text, /Usage: \/session new <directory> <session-name>/);
+
+  await incoming('/session new /home/oryxa feather-3');
+  const text = replies.at(-1).text;
+  assert.match(text, /Attached successfully to new session/);
   assert.equal(calls.create.at(-1).location.directory, '/home/oryxa');
+  assert.equal(calls.create.at(-1).title, 'feather-3');
   assert.ok(calls.create.at(-1).model, 'a default model was chosen');
+  assert.match(text, /session name: feather-3/);
+  assert.match(text, /\nmodel: [^\n]+\/[^\n]+/);
+  assert.match(text, /path: \/home\/oryxa/);
+  assert.match(text, /worktree: none/);
 
   // Choose a model, exit, then create another session: it must reuse the last model.
   await incoming('/model ls');
   await incoming('/models 2');
   await incoming('/exit');
-  await incoming('/session new /tmp');
+  await incoming('/session new /tmp feather-4');
   assert.equal(calls.create.at(-1).model.id, 'm2');
+  assert.equal(calls.create.at(-1).title, 'feather-4');
+});
+
+test('/session new --wk creates a worktree for the owning project and a session inside it', async () => {
+  const replies = [];
+  const { client, calls } = makeClient({
+    projects: [{ id: 'proj-1', canonical: '/home/ubuntu/Oryxa' }],
+    worktrees: { 'proj-1': [{ directory: '/home/ubuntu/Oryxa' }] },
+  });
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+    createSessionPoller: () => ({ stop() {}, tick() {} }),
+  });
+  const incoming = (text) =>
+    handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text } });
+
+  await incoming('/session new /home/ubuntu/Oryxa feather-3 --wk');
+  assert.deepEqual(calls.worktree, [{ projectID: 'proj-1', name: 'feather-3' }]);
+  assert.equal(calls.create.at(-1).location.directory, '/worktrees/feather-3');
+  assert.equal(calls.create.at(-1).title, 'feather-3');
+  const text = replies.at(-1);
+  assert.match(text, /session name: feather-3/);
+  assert.match(text, /path: \/worktrees\/feather-3/);
+  assert.match(text, /worktree path: \/worktrees\/feather-3/);
+});
+
+test('/session new --wk with no matching project creates the session directly', async () => {
+  const replies = [];
+  const { client, calls } = makeClient({ projects: [] });
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+    createSessionPoller: () => ({ stop() {}, tick() {} }),
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session new /tmp plain-1 --wk' } });
+  assert.equal(calls.worktree.length, 0);
+  assert.equal(calls.create.at(-1).location.directory, '/tmp');
+  const text = replies.at(-1);
+  assert.match(text, /no OpenCode project found at \/tmp/);
+  assert.match(text, /session created directly/);
+  assert.match(text, /worktree: none/);
+});
+
+test('/session new reports worktree and session creation errors immediately', async () => {
+  const replies = [];
+  const { client, calls } = makeClient({ projects: [{ id: 'proj-1', canonical: '/home/ubuntu/Oryxa' }], worktreeError: 'worktree boom' });
+  const handle = createCommandHandler({
+    client,
+    defaultDirectory: '/default',
+    send: async (text) => replies.push(text),
+    createSessionPoller: () => ({ stop() {}, tick() {} }),
+  });
+  await handle({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session new /home/ubuntu/Oryxa broken --wk' } });
+  assert.match(replies.at(-1), /Error creating worktree and session "broken"/);
+  assert.match(replies.at(-1), /worktree boom/);
+  assert.equal(calls.create.length, 0);
+
+  const replies2 = [];
+  const failing = makeClient({ sessionCreateError: 'session boom' });
+  const handle2 = createCommandHandler({
+    client: failing.client,
+    defaultDirectory: '/default',
+    send: async (text) => replies2.push(text),
+    createSessionPoller: () => ({ stop() {}, tick() {} }),
+  });
+  await handle2({ pageId: 'PAGE', customerInfo: { id: 'USER' }, payload: { text: '/session new /tmp broken2' } });
+  assert.match(replies2.at(-1), /Error creating session "broken2"/);
+  assert.match(replies2.at(-1), /session boom/);
 });
 
 test('splitText chunks long replies and never returns an empty reply', () => {

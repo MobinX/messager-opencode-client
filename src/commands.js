@@ -2,6 +2,8 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   createSession,
+  createWorktree,
+  findProjectForPath,
   getSession,
   getSessionHistory,
   isSessionActive,
@@ -178,7 +180,7 @@ export function createCommandHandler({
   }
 
   /** Attaches a caller and starts the polling worker that owns all output from now on. */
-  async function attachAndReport(state, session, label, reply) {
+  async function attachAndReport(state, session, label, reply, details = '') {
     stopPoller(state);
     state.sessionId = session.id;
     const running = await isSessionActive(client, session.id);
@@ -193,7 +195,7 @@ export function createCommandHandler({
 
     await reply(
       `Attached successfully to ${label}: ${session.id}\n${session.title ?? ''}\n` +
-        `active model: ${modelText}\n${status}\n\n${formatHistory(history)}`,
+        `active model: ${modelText}\n${details ? `${details}\n` : ''}${status}\n\n${formatHistory(history)}`,
     );
     // Polling starts at attach time and stays until /exit, another attach, or terminal mode.
     startPoller(state, session.id, reply);
@@ -315,19 +317,56 @@ export function createCommandHandler({
           return reply(`OpenCode sessions:\n${numberedSessions(sessions)}`);
         }
         if (/^new(?:\s+(.*))?$/i.test(arg)) {
-          const dirMatch = /^new\s+(.+)$/i.exec(arg);
-          const directory = dirMatch ? dirMatch[1].trim() : state.cwd ?? defaultDirectory;
+          const rest = /^new\s+(.*)$/i.exec(arg)?.[1]?.trim() ?? '';
+          const tokens = rest.split(/\s+/).filter(Boolean);
+          const withWorktree = tokens.some((token) => token.toLowerCase() === '--wk');
+          const parts = tokens.filter((token) => token.toLowerCase() !== '--wk');
+          if (parts.length < 2) {
+            return reply('Usage: /session new <directory> <session-name> [--wk]');
+          }
+          const directory = parts[0];
+          const sessionName = parts.slice(1).join(' ');
           let model = state.lastModel ?? envModel();
           if (!model) {
             model = pickRandomModel(await refreshModels(state));
           }
-          const session = await createSession(client, directory, model);
-          if (model) state.lastModel = model;
-          await attachAndReport(state, session, `new session in ${directory}`, reply);
-          return undefined;
+          let worktreePath = null;
+          try {
+            let sessionDirectory = directory;
+            if (withWorktree) {
+              const project = await findProjectForPath(client, directory);
+              if (project?.id) {
+                const worktree = await createWorktree(client, project.id, sessionName);
+                worktreePath = worktree.directory;
+                sessionDirectory = worktree.directory;
+              }
+            }
+            const session = await createSession(client, sessionDirectory, model, sessionName);
+            if (model) state.lastModel = model;
+            const noProjectNote =
+              withWorktree && !worktreePath
+                ? `note: no OpenCode project found at ${directory} — no worktree was created; session created directly.\n`
+                : '';
+            const details =
+              `${noProjectNote}session name: ${sessionName}\n` +
+              `model: ${model ? `${model.providerID}/${model.modelID}` : 'default'}\n` +
+              `path: ${sessionDirectory}\n` +
+              (worktreePath ? `worktree path: ${worktreePath}` : 'worktree: none');
+            await attachAndReport(state, session, `new session in ${directory}`, reply, details);
+            return undefined;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            log('error', { kind: 'new-session', directory, sessionName, withWorktree, message });
+            return reply(
+              `Error creating ${withWorktree ? 'worktree and session' : 'session'} ` +
+                `"${sessionName}" in ${directory}: ${message}`,
+            );
+          }
         }
         const number = parseNumber(arg);
-        if (!number) return reply('Usage: /session [number | new /directory]');
+        if (!number) {
+          return reply('Usage: /session [number | new /directory <session-name> [--wk]]');
+        }
         if (!state.sessionList.length) await refreshSessions(state);
         const session = state.sessionList[number - 1];
         if (!session) return reply(`No session number ${number}. Send /session to see the list.`);

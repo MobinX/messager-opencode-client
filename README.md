@@ -168,7 +168,8 @@ Health check: `curl http://localhost:8788/health`
 | `!ls`, `!pwd`, `!cd /tmp` | Run a shell command; output is sent back. `!cd` changes the working directory for later `!` commands. |
 | `/session` | List OpenCode sessions with numbers |
 | `/session 2` | Attach to session 2; checks whether it is busy, replies with confirmation/model/history and either “no operation currently running” or a live report of the running turn |
-| `/session new /home/oryxa` | Create and attach a session in that directory |
+| `/session new /home/oryxa feather-3` | Create and attach a session named `feather-3` in that directory (name is required) |
+| `/session new /home/oryxa feather-3 --wk` | Find the OpenCode project owning that path, create a git worktree named `feather-3`, then create the session inside it. If no project owns the path, the session is created directly in the directory. The reply includes the session name, model, path and worktree path. |
 | `/session pwd` | Show active session title/id, directory and model |
 | `/exit` | Detach from the current session |
 | `/model ls` | List connected chat models with numbers |

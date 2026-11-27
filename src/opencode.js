@@ -74,12 +74,50 @@ export function pickRandomModel(models) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-export async function createSession(client, directory, model) {
+export async function createSession(client, directory, model, title = 'Messenger control panel') {
   return client.session.create({
     location: { directory },
     ...(model ? { model: modelRef(model) } : {}),
-    title: 'Messenger control panel',
+    title,
   });
+}
+
+/**
+ * Finds the OpenCode project that owns a directory. Matches an exact project root, an exact
+ * worktree directory, or the closest registered root containing the path. Returns null when the
+ * directory is not part of any OpenCode project.
+ */
+export async function findProjectForPath(client, directory) {
+  const target = String(directory ?? '').trim();
+  if (!target || !client.project?.list) return null;
+  const projects = (await client.project.list()) ?? [];
+  let best = null;
+
+  for (const project of projects) {
+    const roots = [project.canonical];
+    if (client.worktree?.list) {
+      try {
+        const trees = (await client.worktree.list({ projectID: project.id })) ?? [];
+        for (const tree of trees) roots.push(tree.directory);
+      } catch {
+        // Worktree listing may be unavailable; the project root still counts.
+      }
+    }
+    for (const root of roots) {
+      if (!root) continue;
+      const normalized = root.replace(/\/+$/, '');
+      if (target === normalized) return project;
+      if (target.startsWith(`${normalized}/`) && (!best || normalized.length > best.root.length)) {
+        best = { project, root: normalized };
+      }
+    }
+  }
+  return best?.project ?? null;
+}
+
+/** Creates a git-backed OpenCode worktree for a project, using the session name as its name. */
+export async function createWorktree(client, projectID, name) {
+  return client.worktree.create({ projectID, name });
 }
 
 export async function switchModel(client, sessionID, model) {
