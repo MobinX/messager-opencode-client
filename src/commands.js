@@ -29,6 +29,7 @@ function initialState(defaultDirectory, defaultSessionId = null) {
     followGeneration: 0,
     poller: null,
     terminal: null,
+    pendingDelete: null,
   };
 }
 
@@ -162,6 +163,34 @@ export function createCommandHandler({
     state.followGeneration += 1;
   }
 
+  /** Deletes a confirmed session and clears it from the caller's state. */
+  async function deleteSession(state, pending, reply) {
+    try {
+      // A session with a turn in flight may refuse removal; stop it first when possible.
+      try {
+        await client.session?.interrupt?.({ sessionID: pending.sessionID });
+      } catch {
+        // Not running, or the server does not expose interrupt — removal still applies.
+      }
+      await client.session.remove({ sessionID: pending.sessionID });
+      if (state.sessionId === pending.sessionID) {
+        stopPoller(state);
+        state.sessionId = null;
+        state.permissions.clear();
+        if (state.terminal) {
+          state.terminal.kill();
+          state.terminal = null;
+        }
+      }
+      state.sessionList = state.sessionList.filter((session) => session.id !== pending.sessionID);
+      return reply(`Deleted session: ${pending.title} (${pending.sessionID})`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log('error', { kind: 'delete-session', sessionID: pending.sessionID, message });
+      return reply(`Error deleting session ${pending.title} (${pending.sessionID}): ${message}`);
+    }
+  }
+
   function startPoller(state, sessionID, reply) {
     stopPoller(state);
     const generation = state.followGeneration;
@@ -247,6 +276,14 @@ export function createCommandHandler({
     const pageId = String(event?.pageId ?? '');
     const reply = (message) => send(message, event);
 
+    // A pending /delete owns the caller's next message: only yes/y confirms it.
+    if (state.pendingDelete) {
+      const pending = state.pendingDelete;
+      state.pendingDelete = null;
+      if (/^(yes|y)\s*[.!]?$/i.test(text)) return await deleteSession(state, pending, reply);
+      return reply('delete cancelled');
+    }
+
     // A default session may be set at startup; begin polling on the first interaction so output
     // from any already-running turn is reported without waiting for an explicit attach.
     if (state.sessionId && !state.poller && !state.terminal) {
@@ -297,7 +334,43 @@ export function createCommandHandler({
       if (/^\/exit$/i.test(text)) {
         stopPoller(state);
         state.sessionId = null;
+        state.pendingDelete = null;
         return reply('session exited');
+      }
+
+      // /delete [number] — always ask for confirmation before removing a session.
+      const deleteMatch = /^\/delete(?:\s+(.+))?$/i.exec(text);
+      if (deleteMatch) {
+        const arg = deleteMatch[1]?.trim();
+        let target;
+        let source;
+        if (!arg) {
+          if (!state.sessionId) {
+            return reply('No session attached. Use /delete <number> or attach one with /session first.');
+          }
+          let title = state.sessionId;
+          try {
+            const session = await getSession(client, state.sessionId);
+            title = session?.title ?? state.sessionId;
+          } catch {
+            // The session may already be gone; keep the id as its label.
+          }
+          target = { sessionID: state.sessionId, title };
+          source = 'the attached session';
+        } else {
+          const number = parseNumber(arg);
+          if (!number) return reply('Usage: /delete [number]');
+          if (!state.sessionList.length) await refreshSessions(state);
+          const session = state.sessionList[number - 1];
+          if (!session) return reply(`No session number ${number}. Send /session to see the list.`);
+          target = { sessionID: session.id, title: session.title ?? session.id };
+          source = `session ${number}`;
+        }
+        state.pendingDelete = target;
+        return reply(
+          `Delete ${source}: ${target.title} (${target.sessionID})?\n` +
+            'Reply yes or y to confirm; anything else cancels.',
+        );
       }
 
       // /session, /session N, /session new /path

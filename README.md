@@ -172,6 +172,8 @@ Health check: `curl http://localhost:8788/health`
 | `/session new /home/oryxa feather-3 --wk` | Find the OpenCode project owning that path, create a git worktree named `feather-3`, then create the session inside it. If no project owns the path, the session is created directly in the directory. The reply includes the session name, model, path and worktree path. |
 | `/session pwd` | Show active session title/id, directory and model |
 | `/exit` | Detach from the current session |
+| `/delete` | Ask to delete the currently attached session (reply `yes`/`y` to confirm, anything else cancels) |
+| `/delete 2` | Ask to delete session 2 from the `/session` list (confirmation always required) |
 | `/model ls` | List connected chat models with numbers |
 | `/models 2` | Switch the attached session to model 2 |
 | `/model pwd` | Show the active model and attached session |

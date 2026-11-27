@@ -26,7 +26,7 @@ function makeClient({
     { providerID: 'opencode', modelID: 'm1', name: 'Model One', type: 'chat', enabled: true },
     { providerID: 'anthropic', modelID: 'm2', name: 'Model Two', type: 'chat', enabled: true },
   ];
-  const calls = { create: [], switchModel: [], prompt: [], permissionReply: [], worktree: [] };
+  const calls = { create: [], switchModel: [], prompt: [], permissionReply: [], worktree: [], remove: [] };
 
   const client = {
     session: {
@@ -41,6 +41,12 @@ function makeClient({
       switchModel: async (input) => calls.switchModel.push(input),
       prompt: async (input) => {
         calls.prompt.push(input);
+      },
+      interrupt: async () => {},
+      remove: async ({ sessionID }) => {
+        calls.remove.push(sessionID);
+        const index = sessionList.findIndex((session) => session.id === sessionID);
+        if (index >= 0) sessionList.splice(index, 1);
       },
       get: async ({ sessionID }) =>
         sessionList.find((s) => s.id === sessionID) ?? sessionList[0],
@@ -547,6 +553,67 @@ test('/exit detaches and the next prompt asks for a session again', async () => 
   assert.equal(replies.at(-1).text, 'session exited');
   await incoming('another question');
   assert.match(replies.at(-1).text, /No session currently attached/);
+});
+
+test('/delete with no attached session asks for a number', async () => {
+  const { replies, calls, incoming } = setup();
+  await incoming('/delete');
+  assert.match(replies.at(-1).text, /No session attached.*\/delete <number>/);
+  assert.deepEqual(calls.remove, []);
+});
+
+test('/delete asks for confirmation and deletes the attached session on yes', async () => {
+  const ctx = setup();
+  const { replies, calls, incoming } = ctx;
+  await incoming('/session 1');
+  await incoming('/delete');
+  assert.match(replies.at(-1).text, /Delete the attached session: Session One \(s1\)\?/);
+  assert.match(replies.at(-1).text, /yes or y to confirm/);
+  assert.deepEqual(calls.remove, []);
+
+  await incoming('yes');
+  assert.equal(replies.at(-1).text, 'Deleted session: Session One (s1)');
+  assert.deepEqual(calls.remove, ['s1']);
+  assert.equal(ctx.poller.stopped, true);
+
+  await incoming('hello');
+  assert.match(replies.at(-1).text, /No session currently attached/);
+});
+
+test('/delete is cancelled by any reply other than yes/y', async () => {
+  const { replies, calls, incoming } = setup();
+  await incoming('/session 1');
+  await incoming('/delete');
+  await incoming('no');
+  assert.equal(replies.at(-1).text, 'delete cancelled');
+  assert.deepEqual(calls.remove, []);
+});
+
+test('/delete N deletes only the listed session that was just created', async () => {
+  const ctx = setup();
+  const { replies, calls, incoming } = ctx;
+  await incoming('/session new /tmp feather-del');
+  await incoming('/session');
+  assert.match(replies.at(-1).text, /3\. feather-del \(new-1\)/);
+
+  await incoming('/delete 3');
+  assert.match(replies.at(-1).text, /Delete session 3: feather-del \(new-1\)\?/);
+  assert.deepEqual(calls.remove, []);
+
+  await incoming('y');
+  assert.equal(replies.at(-1).text, 'Deleted session: feather-del (new-1)');
+  assert.deepEqual(calls.remove, ['new-1']);
+  // Pre-existing sessions must be left alone.
+  assert.deepEqual(ctx.sessionList.map((session) => session.id), ['s1', 's2']);
+  assert.equal(ctx.poller.stopped, true);
+});
+
+test('/delete N with an out-of-range number reports the list hint', async () => {
+  const { replies, calls, incoming } = setup();
+  await incoming('/session');
+  await incoming('/delete 99');
+  assert.match(replies.at(-1).text, /No session number 99.*\/session/);
+  assert.deepEqual(calls.remove, []);
 });
 
 test('/model ls lists models and /models 2 switches the attached session', async () => {
